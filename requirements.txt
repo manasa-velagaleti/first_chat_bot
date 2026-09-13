@@ -1,0 +1,18 @@
+# LangChain 1.0 LTS core
+langchain>=1.0,<2.0
+langchain-core>=1.0,<2.0
+langgraph>=1.0,<2.0
+langsmith>=0.3.0
+
+# Model providers - install the one whose API key you have.
+# Only providers whose key is set appear in the app (see config.py).
+langchain-google-genai
+langchain-groq
+langchain-openai
+# langchain-anthropic
+
+# Web chatbox UI
+streamlit>=1.40
+
+# Loads .env
+python-dotenv>=1.0

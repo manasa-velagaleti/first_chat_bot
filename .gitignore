@@ -1,0 +1,11 @@
+# Secrets - never commit
+.env
+
+# Environment
+.venv/
+__pycache__/
+*.pyc
+
+# Vendored LangChain skill bundle (project scaffold, not app code)
+agent/
+skills-lock.json

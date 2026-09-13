@@ -101,7 +101,7 @@ bottom of the sidebar to see the real payload as you change things.
 
 | # | Do this | Expect |
 |---|---------|--------|
-| E1 | "My name is Srija" | Acknowledges |
+| E1 | "My name is Manasa" | Acknowledges |
 | E2 | **Move the temperature slider**, then ask "What's my name?" | **Still knows.** A new model is built on every settings change; the memory is deliberately kept separate |
 | E3 | Switch provider entirely, ask again | Still knows — history is provider-neutral |
 | E4 | Click "New chat", ask again | Does **not** know — fresh thread |

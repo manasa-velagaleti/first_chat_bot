@@ -11,6 +11,10 @@ langchain-groq
 langchain-openai
 # langchain-anthropic
 
+# Recursive chunking for the embeddings CLI
+langchain-text-splitters
+tiktoken
+
 # Web chatbox UI
 streamlit>=1.40
 

@@ -9,3 +9,6 @@ __pycache__/
 # Vendored LangChain skill bundle (project scaffold, not app code)
 agent/
 skills-lock.json
+
+# Saved embedding dumps (multi-MB JSON)
+embeddings_app/out/

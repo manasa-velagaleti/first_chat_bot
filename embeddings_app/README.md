@@ -1,17 +1,35 @@
 # Embeddings & RAG
 
-Two CLIs over one pipeline. `embed.py` shows you what embeddings *are*;
-`rag.py` uses them to answer questions about the documents in `docs/`.
+Three CLIs over one pipeline. `embed.py` shows you what embeddings *are*;
+`rag.py` and `rag_pinecone.py` use them to answer questions about the documents
+in `docs/`.
 
-**Stack:** LangChain · FAISS · OpenAI `text-embedding-3-small` + `gpt-4.1-mini`
+**Stack:** LangChain · FAISS / Pinecone · OpenAI `text-embedding-3-small` + `gpt-4.1-mini`
 
 ```
-core.py     load docs -> chunk (500 chars, recursive, on "\n") -> embedding model
+core.py     load docs -> chunk -> embedding model
               │
-              ├── embed.py   -> embed -> print the vectors
+              ├── embed.py          fixed 500  -> print the vectors
               │
-              └── rag.py     -> embed -> FAISS -> retrieve -> generate an answer
+              ├── rag.py            fixed 500  -> FAISS (local disk) -> answer
+              │
+              └── rag_pinecone.py   paragraph  -> Pinecone (cloud)   -> answer
 ```
+
+### The two RAG apps, side by side
+
+|  | `rag.py` | `rag_pinecone.py` |
+|---|---|---|
+| Vector store | FAISS, a folder on disk | Pinecone, hosted |
+| Chunking | fixed 500 chars, recursive on `\n` | **one chunk per paragraph** |
+| Chunks | 122 (45–498 chars) | 107 (20–1,172 chars) |
+| Score | L2 distance — **lower** is better | cosine similarity — **higher** is better |
+| Needs | nothing beyond OpenAI | `PINECONE_API_KEY` |
+| Survives | a laptop | a laptop dying |
+
+Keeping both is the point: same documents, same embedding model, two chunking
+strategies and two databases. Ask the same question of each and the differences
+are visible in what comes back.
 
 `core.py` holds everything the two have in common. That isn't tidiness for its own
 sake: if chunking drifted between them, a chunk you inspected with `embed.py` would
@@ -22,9 +40,77 @@ about the system it exists to explain. They now provably produce identical chunk
 
 | File | Role |
 |------|------|
-| `core.py` | Shared: paths, models, chunking, document loading, cost estimates |
+| `core.py` | Shared: paths, models, both chunking strategies, document loading, cost |
 | `embed.py` | Inspect embeddings — chunk, embed, print vectors |
-| `rag.py` | Ask questions — index into FAISS, retrieve, generate |
+| `rag.py` | Ask questions — FAISS on disk, fixed-size chunks |
+| `rag_pinecone.py` | Ask questions — Pinecone cloud, paragraph chunks |
+
+---
+
+## `rag_pinecone.py` — Pinecone + paragraph chunking
+
+```bash
+.venv\Scripts\python.exe embeddings_app/rag_pinecone.py --build   # create + upload
+.venv\Scripts\python.exe embeddings_app/rag_pinecone.py           # interactive
+.venv\Scripts\python.exe embeddings_app/rag_pinecone.py --ask "What about jobs?"
+.venv\Scripts\python.exe embeddings_app/rag_pinecone.py --stats   # what's in there
+```
+
+```
+--build              create the index and upload docs/, then exit
+--ask "question"     ask once and exit
+--stats              show dimension, host and vector counts
+--index NAME         a different index (default: sotu-paragraphs)
+--namespace NAME     keep several document sets in one index
+-k 4                 how many chunks to retrieve
+--model gpt-4.1      a different OpenAI chat model
+--no-sources         hide the retrieved excerpts
+```
+
+Add `PINECONE_API_KEY` to `.env` first — free tier at
+[app.pinecone.io](https://app.pinecone.io) covers this comfortably.
+
+`--build` creates a serverless index (1536 dims, cosine, `aws/us-east-1`), waits
+for it to become ready, **clears any previous vectors**, then uploads. Without
+that clear, a second `--build` would leave two copies of every chunk in the index.
+
+```
+Retrieved 3 excerpts (cosine similarity: higher = closer match)
+  [1] score 0.564 | sotu_address_obama.txt paragraph 33
+      So tonight, I'm proposing that we take $30 billion of the money Wall…
+  [2] score 0.505 | sotu_address_obama.txt paragraph 25
+      Talk to the small business in Phoenix that will triple its workforce…
+```
+
+Sources cite the **paragraph number**, so a retrieved excerpt maps to a place in
+the original document.
+
+### Paragraph chunking
+
+One chunk per paragraph, rather than a fixed character budget. Each vector then
+represents one complete idea instead of an arbitrary 500-character window.
+
+It's written by hand in `core.split_documents_by_paragraph()` rather than with
+`RecursiveCharacterTextSplitter`, because that splitter **packs**: given a
+budget it merges consecutive small pieces until they fill it. That's the exact
+opposite of what's wanted here — two unrelated short paragraphs would end up
+sharing a vector.
+
+`PARAGRAPH_MAX` (1500) is the safety net. A paragraph longer than that is split
+recursively anyway, because one enormous chunk averages too many ideas into a
+single vector to match anything well. On this document nothing hit it — the
+longest paragraph is 1,172 characters.
+
+The trade-off is even chunk sizes versus whole ideas:
+
+```
+fixed-500   : 122 chunks,   45 - 498 chars,  average 335
+paragraph   : 107 chunks,   20 - 1,172 chars, average 381
+```
+
+> **Pinecone scores are cosine similarity — higher is better.** FAISS in `rag.py`
+> returns L2 distance, where lower is better. Same pipeline, opposite direction;
+> easy to misread when comparing the two.
 
 ---
 

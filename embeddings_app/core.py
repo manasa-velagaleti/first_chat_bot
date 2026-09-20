@@ -55,6 +55,20 @@ CHUNK_OVERLAP = 50
 # boundaries, cutting paragraphs apart.
 SEPARATORS = ["\n\n", "\n", ". ", " ", ""]
 
+# --- paragraph chunking ---------------------------------------------------
+# A different strategy, used by rag_pinecone.py: one chunk per paragraph
+# rather than a fixed character budget.
+#
+# The two differ in what they optimise for. Fixed-size chunking gives evenly
+# sized vectors and predictable cost, but cuts a long paragraph in half and
+# glues short ones together. Paragraph chunking keeps each idea whole, at the
+# price of wildly uneven chunks - in this document, 60 to 1,800 characters.
+#
+# PARAGRAPH_MAX is the safety net: a paragraph longer than this is still split
+# recursively, because a single 5,000-character chunk would dilute its own
+# embedding until it matched nothing in particular.
+PARAGRAPH_MAX = 1500
+
 BAR = "=" * 74
 
 
@@ -81,6 +95,46 @@ def split_documents(docs: list[Document], chunk_size: int = CHUNK_SIZE,
                     overlap: int = CHUNK_OVERLAP) -> list[Document]:
     """Split Documents, keeping metadata and numbering each chunk."""
     chunks = make_splitter(chunk_size, overlap).split_documents(docs)
+    for i, c in enumerate(chunks):
+        c.metadata["chunk"] = i
+    return chunks
+
+
+def split_documents_by_paragraph(docs: list[Document],
+                                 max_chars: int = PARAGRAPH_MAX
+                                 ) -> list[Document]:
+    """One chunk per paragraph, keeping each idea intact.
+
+    Written by hand rather than with RecursiveCharacterTextSplitter, because
+    that splitter *packs*: given a character budget it merges consecutive
+    small pieces until they fill it. That is the opposite of what is wanted
+    here - two unrelated short paragraphs would end up sharing one vector.
+
+    A paragraph over max_chars is still split recursively, since an
+    over-long chunk averages too many ideas into one vector to match well.
+    """
+    splitter = make_splitter(max_chars, CHUNK_OVERLAP)
+    chunks: list[Document] = []
+
+    for doc in docs:
+        # Blank-line-separated first; falls back to single newlines, which is
+        # what these documents actually use.
+        blocks = [p.strip() for p in doc.page_content.split("\n\n")]
+        if len(blocks) <= 1:
+            blocks = [p.strip() for p in doc.page_content.split("\n")]
+        paragraphs = [p for p in blocks if p]
+
+        for para_no, para in enumerate(paragraphs):
+            pieces = [para] if len(para) <= max_chars else splitter.split_text(para)
+            for part_no, piece in enumerate(pieces):
+                meta = dict(doc.metadata)
+                meta["paragraph"] = para_no
+                # Only set when a paragraph had to be broken up, so it is
+                # obvious in the output which chunks are partial.
+                if len(pieces) > 1:
+                    meta["part"] = f"{part_no + 1}/{len(pieces)}"
+                chunks.append(Document(page_content=piece, metadata=meta))
+
     for i, c in enumerate(chunks):
         c.metadata["chunk"] = i
     return chunks

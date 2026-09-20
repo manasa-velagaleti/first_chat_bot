@@ -1,12 +1,12 @@
-"""Turn text into OpenAI embeddings and show what comes back.
+"""Inspect embeddings: chunk text, embed it, and show the vectors.
 
     python embeddings_app/embed.py                      # the Obama SOTU address
     python embeddings_app/embed.py --text "hello there"
     python embeddings_app/embed.py --file notes.txt --limit 5
 
-Chunks the input with RecursiveCharacterTextSplitter, embeds each chunk with
-text-embedding-3-small, and prints the vectors alongside the text they came
-from.
+This is the "look at what's happening" tool. It shares chunking and the
+embedding model with rag.py through core.py, so the chunks you inspect here
+are exactly the chunks rag.py retrieves.
 """
 
 from __future__ import annotations
@@ -17,59 +17,17 @@ import math
 import sys
 from pathlib import Path
 
-from dotenv import load_dotenv
-from langchain_openai import OpenAIEmbeddings
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+import core
 
-# This app lives in a subfolder, but the API key lives in the project root.
-ROOT = Path(__file__).resolve().parent.parent
-load_dotenv(ROOT / ".env")
-
-DEFAULT_FILE = ROOT / "docs" / "sotu_address_obama.txt"
-MODEL = "text-embedding-3-small"
-PRICE_PER_1M_TOKENS = 0.02          # USD, text-embedding-3-small
-
-BAR = "=" * 74
-
-
-def count_tokens(text: str) -> int:
-    """Token count for cost estimation. Falls back to a rough ratio."""
-    try:
-        import tiktoken
-        return len(tiktoken.get_encoding("cl100k_base").encode(text))
-    except Exception:
-        return len(text) // 4
-
-
-def split(text: str, chunk_size: int, overlap: int) -> list[str]:
-    """Break text on meaningful boundaries.
-
-    RecursiveCharacterTextSplitter tries separators in order - paragraph
-    break, then line break, then space, then raw character - and only falls
-    to the next one when a piece is still too big. So a paragraph that fits
-    stays whole instead of being cut mid-word.
-    """
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=chunk_size,
-        chunk_overlap=overlap,
-        separators=["\n\n", "\n", ". ", " ", ""],
-        length_function=len,
-    )
-    return splitter.split_text(text)
-
-
-def preview(text: str, width: int = 64) -> str:
-    """One-line, quote-safe snippet of a chunk."""
-    flat = " ".join(text.split())
-    return flat if len(flat) <= width else flat[: width - 1] + "…"
+DEFAULT_FILE = core.DOCS_DIR / "sotu_address_obama.txt"
 
 
 def show(index: int, chunk: str, vector: list[float], show_full: bool) -> None:
     norm = math.sqrt(sum(v * v for v in vector))
     head = ", ".join(f"{v:+.5f}" for v in vector[:8])
 
-    print(f"\n[{index}] {len(chunk)} chars | {count_tokens(chunk)} tokens")
-    print(f'     text : "{preview(chunk)}"')
+    print(f"\n[{index}] {len(chunk)} chars | {core.count_tokens(chunk)} tokens")
+    print(f'     text : "{core.preview(chunk)}"')
     print(f"     dims : {len(vector)}")
     if show_full:
         print(f"     vec  : {vector}")
@@ -88,10 +46,11 @@ def main() -> int:
     src = ap.add_mutually_exclusive_group()
     src.add_argument("--text", help="embed this string instead of a file")
     src.add_argument("--file", type=Path, help="embed this file")
-    ap.add_argument("--chunk-size", type=int, default=500,
-                    help="max characters per chunk (default: 500)")
-    ap.add_argument("--overlap", type=int, default=50,
-                    help="characters shared between neighbours (default: 50)")
+    ap.add_argument("--chunk-size", type=int, default=core.CHUNK_SIZE,
+                    help=f"max characters per chunk (default: {core.CHUNK_SIZE})")
+    ap.add_argument("--overlap", type=int, default=core.CHUNK_OVERLAP,
+                    help=f"characters shared between neighbours "
+                         f"(default: {core.CHUNK_OVERLAP})")
     ap.add_argument("--limit", type=int,
                     help="only embed the first N chunks - keeps cost down "
                          "while experimenting")
@@ -112,10 +71,11 @@ def main() -> int:
             print(f"File not found: {path}")
             return 1
         text = path.read_text(encoding="utf-8")
-        source = str(path.relative_to(ROOT) if path.is_relative_to(ROOT) else path)
+        source = str(path.relative_to(core.ROOT)
+                     if path.is_relative_to(core.ROOT) else path)
 
     # --- chunk ------------------------------------------------------------
-    chunks = split(text, args.chunk_size, args.overlap)
+    chunks = core.split_text(text, args.chunk_size, args.overlap)
     total_chunks = len(chunks)
     if args.limit:
         chunks = chunks[: args.limit]
@@ -123,35 +83,32 @@ def main() -> int:
         print("Nothing to embed - the input was empty.")
         return 1
 
-    tokens = sum(count_tokens(c) for c in chunks)
-    sizes = [len(c) for c in chunks]
+    tokens, cost = core.estimate_cost(chunks)
+    limited = f" of {total_chunks} (--limit)" if len(chunks) < total_chunks else ""
 
-    print(BAR)
+    print(core.BAR)
     print(f"Source     : {source}")
     print(f"Input      : {len(text):,} chars")
-    print(f"Chunking   : recursive, size {args.chunk_size}, overlap {args.overlap}")
-    limited = f" of {total_chunks} (--limit)" if len(chunks) < total_chunks else ""
-    print(f"Chunks     : {len(chunks)}{limited}  "
-          f"(smallest {min(sizes)}, largest {max(sizes)}, "
-          f"average {sum(sizes) // len(sizes)} chars)")
-    print(f"Model      : {MODEL}")
-    print(f"Tokens     : {tokens:,}  "
-          f"(about ${tokens / 1_000_000 * PRICE_PER_1M_TOKENS:.6f})")
-    print(BAR)
+    print(f"Chunking   : recursive, size {args.chunk_size}, "
+          f"overlap {args.overlap}")
+    print(f"Separators : {core.SEPARATORS}")
+    print(f"Chunks     : {core.chunk_stats(chunks)}{limited}")
+    print(f"Model      : {core.EMBED_MODEL}")
+    print(f"Tokens     : {tokens:,}  (about ${cost:.6f})")
+    print(core.BAR)
 
     if args.dry_run:
         for i, chunk in enumerate(chunks):
             print(f"\n[{i}] {len(chunk)} chars")
-            print(f'     text : "{preview(chunk)}"')
-        print(f"\nDry run - no API call made. Drop --dry-run to embed.")
+            print(f'     text : "{core.preview(chunk)}"')
+        print("\nDry run - no API call made. Drop --dry-run to embed.")
         return 0
 
     # --- embed ------------------------------------------------------------
     # One call for the whole list: batching is far faster than a call per
     # chunk, and the vectors come back in the order they were sent.
     try:
-        embedder = OpenAIEmbeddings(model=MODEL)
-        vectors = embedder.embed_documents(chunks)
+        vectors = core.embeddings().embed_documents(chunks)
     except Exception as err:
         print(f"\nEmbedding failed: {type(err).__name__}: {err}")
         if "api_key" in str(err).lower() or "401" in str(err):
@@ -161,16 +118,18 @@ def main() -> int:
     for i, (chunk, vector) in enumerate(zip(chunks, vectors)):
         show(i, chunk, vector, args.full)
 
-    print(f"\n{BAR}")
-    print(f"Embedded {len(vectors)} chunks into {len(vectors[0])}-dimensional vectors.")
-    print(BAR)
+    print(f"\n{core.BAR}")
+    print(f"Embedded {len(vectors)} chunks into "
+          f"{len(vectors[0])}-dimensional vectors.")
+    print(core.BAR)
 
     if args.save:
         payload = {
-            "model": MODEL,
+            "model": core.EMBED_MODEL,
             "source": source,
             "chunk_size": args.chunk_size,
             "chunk_overlap": args.overlap,
+            "separators": core.SEPARATORS,
             "dimensions": len(vectors[0]),
             "chunks": [
                 {"index": i, "text": c, "embedding": v}
@@ -179,8 +138,8 @@ def main() -> int:
         }
         args.save.parent.mkdir(parents=True, exist_ok=True)
         args.save.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        size_mb = args.save.stat().st_size / 1_000_000
-        print(f"Saved to {args.save}  ({size_mb:.1f} MB)")
+        print(f"Saved to {args.save}  "
+              f"({args.save.stat().st_size / 1_000_000:.1f} MB)")
 
     return 0
 

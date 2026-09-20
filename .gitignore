@@ -12,3 +12,6 @@ skills-lock.json
 
 # Saved embedding dumps (multi-MB JSON)
 embeddings_app/out/
+
+# FAISS index - a build artefact, regenerate with: rag.py --build
+rag_app/faiss_index/

@@ -15,6 +15,11 @@ langchain-openai
 langchain-text-splitters
 tiktoken
 
+# RAG: FAISS vector store (FAISS still ships inside langchain-community;
+# the standalone langchain-faiss package on PyPI is an empty placeholder)
+faiss-cpu
+langchain-community>=0.4.0,<0.5.0
+
 # Web chatbox UI
 streamlit>=1.40
 

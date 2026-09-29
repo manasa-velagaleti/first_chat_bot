@@ -181,14 +181,20 @@ def show_stats(name: str) -> None:
 # Ask
 # --------------------------------------------------------------------------
 
-def answer(store: PineconeVectorStore, question: str, k: int, model: str,
-           show_sources: bool) -> None:
+def ask(store: PineconeVectorStore, question: str, k: int = 4,
+        model: str = core.CHAT_MODEL) -> dict:
+    """Retrieve, generate, and return the result as plain data.
+
+    Returns rather than prints so the same code serves the CLI below and the
+    web API in rag_web/server.py. Anything that printed here would have to be
+    reimplemented there, and the two would drift.
+    """
     # Pinecone is configured with cosine similarity, so HIGHER is better here
     # - the opposite of the L2 distance FAISS returns in rag.py.
     hits = store.similarity_search_with_score(question, k=k)
     if not hits:
-        print("Nothing retrieved - is the index empty? Try --stats.")
-        return
+        return {"answer": "Nothing retrieved - is the index empty?",
+                "sources": [], "model": model}
 
     context = "\n\n".join(
         f"[{n}] (from {doc.metadata.get('file', '?')})\n{doc.page_content}"
@@ -202,23 +208,40 @@ def answer(store: PineconeVectorStore, question: str, k: int, model: str,
                                     f"Question: {question}"},
     ])
 
-    print(f"\n{response.text}\n")
+    sources = []
+    for n, (doc, score) in enumerate(hits, start=1):
+        # Pinecone stores metadata numbers as floats, so an int that went in
+        # as 33 comes back as 33.0 - cast it before displaying.
+        para = doc.metadata.get("paragraph")
+        sources.append({
+            "n": n,
+            "score": round(float(score), 3),
+            "file": doc.metadata.get("file", "?"),
+            "paragraph": int(para) if para is not None else None,
+            "part": doc.metadata.get("part"),
+            "text": doc.page_content,
+        })
 
-    if show_sources:
+    return {"answer": response.text, "sources": sources, "model": model}
+
+
+def answer(store: PineconeVectorStore, question: str, k: int, model: str,
+           show_sources: bool) -> None:
+    """CLI presentation of ask()."""
+    result = ask(store, question, k, model)
+    print(f"\n{result['answer']}\n")
+
+    if show_sources and result["sources"]:
         print("-" * 74)
-        print(f"Retrieved {len(hits)} excerpts "
+        print(f"Retrieved {len(result['sources'])} excerpts "
               f"(cosine similarity: higher = closer match)")
-        for n, (doc, score) in enumerate(hits, start=1):
-            # Pinecone stores metadata numbers as floats, so an int that went
-            # in as 33 comes back as 33.0 - cast it before displaying.
-            para = doc.metadata.get("paragraph")
-            where = f"paragraph {int(para)}" if para is not None else "paragraph ?"
-            part = doc.metadata.get("part")
-            if part:
-                where += f" part {part}"
-            print(f"  [{n}] score {score:.3f} | "
-                  f"{doc.metadata.get('file', '?')} {where}")
-            print(f"      {core.preview(doc.page_content, 100)}")
+        for s in result["sources"]:
+            where = (f"paragraph {s['paragraph']}"
+                     if s["paragraph"] is not None else "paragraph ?")
+            if s["part"]:
+                where += f" part {s['part']}"
+            print(f"  [{s['n']}] score {s['score']:.3f} | {s['file']} {where}")
+            print(f"      {core.preview(s['text'], 100)}")
         print("-" * 74)
 
 

@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ask the documents</title>
+
+  <!-- React without a build step. Babel compiles the JSX below in the
+       browser, which is why there is no npm, no node_modules and no bundler.
+       Fine for a local tool; a production app would precompile instead. -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --card: #ffffff;
+      --ink: #1a1c1f;
+      --muted: #6b7280;
+      --line: #e3e6ea;
+      --accent: #2f6fed;
+      --accent-soft: #eaf0fe;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #14161a; --card: #1c1f24; --ink: #e8eaed; --muted: #9aa3ad;
+        --line: #2b3038; --accent: #6b9bff; --accent-soft: #1e2636;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--ink);
+      font: 15px/1.6 -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+    .wrap { max-width: 860px; margin: 0 auto; padding: 32px 20px 80px; }
+
+    header h1 { font-size: 22px; margin: 0 0 4px; }
+    header .sub { color: var(--muted); font-size: 13px; }
+    .pill {
+      display: inline-block; padding: 2px 9px; border-radius: 999px;
+      background: var(--accent-soft); color: var(--accent);
+      font-size: 12px; font-weight: 600; margin-right: 6px;
+    }
+
+    .ask { margin: 24px 0; }
+    .row { display: flex; gap: 8px; }
+    textarea {
+      flex: 1; padding: 12px 14px; border: 1px solid var(--line);
+      border-radius: 10px; background: var(--card); color: var(--ink);
+      font: inherit; resize: vertical; min-height: 52px;
+    }
+    textarea:focus { outline: 2px solid var(--accent); border-color: transparent; }
+    button {
+      padding: 0 20px; border: 0; border-radius: 10px; background: var(--accent);
+      color: #fff; font: inherit; font-weight: 600; cursor: pointer;
+    }
+    button:disabled { opacity: .5; cursor: default; }
+    .opts { margin-top: 10px; display: flex; gap: 14px; align-items: center;
+            color: var(--muted); font-size: 13px; flex-wrap: wrap; }
+    .opts input[type=range] { width: 130px; vertical-align: middle; }
+
+    .examples { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
+    .examples button {
+      background: transparent; border: 1px solid var(--line); color: var(--muted);
+      font-size: 13px; font-weight: 400; padding: 5px 11px; border-radius: 999px;
+    }
+    .examples button:hover { border-color: var(--accent); color: var(--accent); }
+
+    .card {
+      background: var(--card); border: 1px solid var(--line);
+      border-radius: 12px; padding: 18px 20px; margin-bottom: 14px;
+    }
+    .answer { white-space: pre-wrap; }
+    .qline { color: var(--muted); font-size: 13px; margin-bottom: 10px; }
+
+    .srcheading {
+      margin: 18px 0 8px; font-size: 12px; text-transform: uppercase;
+      letter-spacing: .05em; color: var(--muted);
+    }
+    .src { border-top: 1px solid var(--line); padding: 12px 0; }
+    .src:last-child { padding-bottom: 0; }
+    .srctop { display: flex; gap: 8px; align-items: baseline;
+              font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+    .num {
+      background: var(--accent-soft); color: var(--accent); font-weight: 700;
+      border-radius: 5px; padding: 1px 7px;
+    }
+    .bar { flex: 1; height: 4px; background: var(--line); border-radius: 2px;
+           max-width: 110px; overflow: hidden; }
+    .bar i { display: block; height: 100%; background: var(--accent); }
+    .srctext { font-size: 14px; color: var(--ink); }
+    .srctext.clipped {
+      display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .more { background: none; border: 0; color: var(--accent); padding: 4px 0;
+            font-size: 12px; font-weight: 600; cursor: pointer; }
+
+    .err { border-color: #e2b4b4; background: #fdf3f3; color: #8a2b2b; }
+    @media (prefers-color-scheme: dark) {
+      .err { background: #2a1d1d; border-color: #5a3535; color: #f3b9b9; }
+    }
+    .thinking { color: var(--muted); }
+    .dots::after {
+      content: ''; animation: d 1.2s steps(4, end) infinite;
+    }
+    @keyframes d { 0%{content:''} 25%{content:'.'} 50%{content:'..'} 75%{content:'...'} }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+
+    const EXAMPLES = [
+      "What did Obama propose for small businesses?",
+      "What did he say about clean energy?",
+      "How many people cannot find work?",
+      "What is his favourite pizza topping?",
+    ];
+
+    function Source({ s }) {
+      const [open, setOpen] = useState(false);
+      const long = s.text.length > 240;
+      // Cosine similarity runs 0..1 in practice; scale for the bar only.
+      const pct = Math.max(4, Math.min(100, s.score * 100));
+      return (
+        <div className="src">
+          <div className="srctop">
+            <span className="num">{s.n}</span>
+            <span>{s.file}</span>
+            {s.paragraph !== null && <span>· paragraph {s.paragraph}</span>}
+            {s.part && <span>· part {s.part}</span>}
+            <div className="bar"><i style={{ width: pct + "%" }} /></div>
+            <span>{s.score.toFixed(3)}</span>
+          </div>
+          <div className={"srctext" + (long && !open ? " clipped" : "")}>
+            {s.text}
+          </div>
+          {long && (
+            <button className="more" onClick={() => setOpen(!open)}>
+              {open ? "Show less" : "Show full paragraph"}
+            </button>
+          )}
+        </div>
+      );
+    }
+
+    function Result({ item }) {
+      if (item.error) {
+        return (
+          <div className="card err">
+            <div className="qline">{item.question}</div>
+            <strong>Something went wrong:</strong> {item.error}
+          </div>
+        );
+      }
+      if (item.loading) {
+        return (
+          <div className="card">
+            <div className="qline">{item.question}</div>
+            <span className="thinking">Searching the documents<span className="dots" /></span>
+          </div>
+        );
+      }
+      return (
+        <div className="card">
+          <div className="qline">{item.question}</div>
+          <div className="answer">{item.answer}</div>
+          {item.sources?.length > 0 && (
+            <>
+              <div className="srcheading">
+                {item.sources.length} passages retrieved · higher score = closer match
+              </div>
+              {item.sources.map((s) => <Source key={s.n} s={s} />)}
+            </>
+          )}
+        </div>
+      );
+    }
+
+    function App() {
+      const [status, setStatus] = useState(null);
+      const [q, setQ] = useState("");
+      const [k, setK] = useState(4);
+      const [items, setItems] = useState([]);
+      const busy = items.some((i) => i.loading);
+      const box = useRef(null);
+
+      useEffect(() => {
+        fetch("/api/status").then((r) => r.json()).then(setStatus)
+          .catch((e) => setStatus({ ready: false, error: String(e) }));
+      }, []);
+
+      async function submit(question) {
+        const text = (question ?? q).trim();
+        if (!text || busy) return;
+        setQ("");
+        const id = Date.now();
+        // Newest first, so the answer appears where you are looking.
+        setItems((prev) => [{ id, question: text, loading: true }, ...prev]);
+
+        try {
+          const res = await fetch("/api/ask", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ question: text, k }),
+          });
+          const data = await res.json();
+          setItems((prev) => prev.map((it) =>
+            it.id === id ? { ...it, ...data, loading: false } : it));
+        } catch (e) {
+          setItems((prev) => prev.map((it) =>
+            it.id === id ? { ...it, error: String(e), loading: false } : it));
+        }
+      }
+
+      function onKey(e) {
+        // Enter sends, Shift+Enter makes a new line.
+        if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); }
+      }
+
+      return (
+        <div className="wrap">
+          <header>
+            <h1>Ask the documents</h1>
+            <div className="sub">
+              {status === null && "connecting…"}
+              {status && status.ready && (
+                <>
+                  <span className="pill">Pinecone</span>
+                  <span className="pill">{status.vectors} vectors</span>
+                  <span className="pill">{status.chunking}</span>
+                  {status.model}
+                </>
+              )}
+              {status && !status.ready && (
+                <span style={{ color: "#c0392b" }}>{status.error}</span>
+              )}
+            </div>
+          </header>
+
+          <div className="ask">
+            <div className="row">
+              <textarea
+                ref={box}
+                value={q}
+                placeholder="Ask anything about the documents…"
+                onChange={(e) => setQ(e.target.value)}
+                onKeyDown={onKey}
+              />
+              <button onClick={() => submit()} disabled={busy || !q.trim()}>
+                {busy ? "…" : "Ask"}
+              </button>
+            </div>
+
+            <div className="opts">
+              <label>
+                Passages to retrieve: <b>{k}</b>{" "}
+                <input type="range" min="1" max="10" value={k}
+                       onChange={(e) => setK(+e.target.value)} />
+              </label>
+              <span>Enter to send · Shift+Enter for a new line</span>
+            </div>
+
+            {items.length === 0 && (
+              <div className="examples">
+                {EXAMPLES.map((e) => (
+                  <button key={e} onClick={() => submit(e)}>{e}</button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {items.map((it) => <Result key={it.id} item={it} />)}
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>

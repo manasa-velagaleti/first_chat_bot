@@ -26,21 +26,29 @@ the example questions. Answers appear newest-first with the passages they came
 from underneath — score, source file, paragraph number, and the text itself.
 Long paragraphs are clipped with a "Show full paragraph" toggle.
 
-The **⚙ Retrieval** button opens a settings dialog for `k` — how many chunks get
-pulled from Pinecone and handed to the model. It has a slider, quick presets
-(2/4/6/8) and a short guide to picking a value:
+The **⚙ Chunks** button opens a settings dialog with two controls.
 
-| k | When |
-|---|------|
-| 1–2 | A single specific fact; little room for irrelevant text |
-| 3–5 | The usual range — enough context without diluting it |
-| 6–10 | An answer feels incomplete, or the topic is spread out. Costs more, can pull in noise |
+**Chunk size** — how the documents are cut up before being embedded. Smaller
+chunks are more precise, larger ones carry more context:
 
-It's a native `<dialog>`, so Escape closes it and focus is trapped while open.
+| Setting | Chunks | Sizes |
+|---------|--------|-------|
+| By paragraph | 107 | 20–1,172 chars |
+| 300 characters | 196 | 24–299 |
+| 500 characters | 122 | 45–498 |
+| 700 characters | 81 | 101–698 |
+| 1000 characters | 56 | 260–997 |
 
-One of the example questions — *"What is his favourite pizza topping?"* — is there
-on purpose. It should come back saying the documents don't cover it. If it ever
-invents an answer, something is broken.
+Chunk size is decided when the index is built, not when you ask — so each
+setting has to be embedded once. The dialog shows what each would produce
+*before* you pay for it, with a **Build** button and the cost (about $0.0002).
+
+Each setting lives in **its own Pinecone namespace**, so once built it stays
+built: switching between them afterwards is instant and free. The row you're
+using is highlighted.
+
+**Passages per question** — `k`, how many chunks get retrieved and handed to the
+model. 3–5 suits most questions; raise it when answers come back thin.
 
 ## How it fits together
 

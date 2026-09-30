@@ -134,6 +134,21 @@
     .dlgfoot { display: flex; justify-content: flex-end; gap: 8px;
                padding: 14px 24px; border-top: 1px solid var(--line); }
 
+    .opt {
+      display: flex; align-items: center; gap: 12px; padding: 11px 12px;
+      border: 1px solid var(--line); border-radius: 10px; margin-bottom: 8px;
+      cursor: pointer;
+    }
+    .opt.on { border-color: var(--accent); background: var(--accent-soft); }
+    .optmain { flex: 1; min-width: 0; }
+    .optlabel { font-weight: 600; font-size: 14px; }
+    .tick { color: var(--accent); font-size: 12px; font-weight: 700;
+            margin-left: 8px; }
+    .optmeta { color: var(--muted); font-size: 12px; margin-top: 2px; }
+    .built { color: var(--muted); font-size: 12px; white-space: nowrap; }
+    .buildbtn { font-size: 12px; padding: 6px 12px; border-radius: 8px;
+                white-space: nowrap; }
+
     .err { border-color: #e2b4b4; background: #fdf3f3; color: #8a2b2b; }
     @media (prefers-color-scheme: dark) {
       .err { background: #2a1d1d; border-color: #5a3535; color: #f3b9b9; }
@@ -185,8 +200,11 @@
       );
     }
 
-    function ChunkDialog({ k, setK, open, onClose }) {
+    function SettingsDialog({ k, setK, chunk, setChunk, open, onClose,
+                              configs, reloadConfigs }) {
       const ref = useRef(null);
+      const [building, setBuilding] = useState(null);
+      const [err, setErr] = useState(null);
 
       // <dialog> is opened imperatively, so the DOM has to be told whenever
       // React's `open` prop changes. showModal() also gives Escape-to-close
@@ -198,51 +216,89 @@
         if (!open && d.open) d.close();
       }, [open]);
 
+      const current = configs?.options?.find((o) => o.chunk_size === chunk);
+
+      async function build(size) {
+        setBuilding(size);
+        setErr(null);
+        try {
+          const res = await fetch("/api/build", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ chunk_size: size }),
+          });
+          const data = await res.json();
+          if (data.error) setErr(data.error);
+          else await reloadConfigs();
+        } catch (e) {
+          setErr(String(e));
+        }
+        setBuilding(null);
+      }
+
       return (
         <dialog ref={ref} onClose={onClose}>
           <div className="dlg">
-            <h2>Retrieval settings</h2>
+            <h2>Chunk size</h2>
             <p className="hint">
-              How many passages to pull from Pinecone and hand to the model
-              as context.
+              How the documents are cut up before being embedded. Smaller
+              chunks are more precise; larger ones carry more context.
             </p>
 
-            <div className="kval">{k}</div>
-            <div className="kcap">passage{k === 1 ? "" : "s"} per question</div>
+            {!configs && <p className="hint">Loading…</p>}
 
+            {configs?.options?.map((o) => (
+              <div key={o.namespace}
+                   className={"opt" + (o.chunk_size === chunk ? " on" : "")}
+                   onClick={() => o.built && setChunk(o.chunk_size)}>
+                <div className="optmain">
+                  <div className="optlabel">
+                    {o.label}
+                    {o.chunk_size === chunk && <span className="tick">✓ in use</span>}
+                  </div>
+                  <div className="optmeta">
+                    {o.would_make} chunks · {o.smallest}–{o.largest} chars ·
+                    avg {o.average}
+                  </div>
+                </div>
+                {o.built ? (
+                  <span className="built">{o.vectors} vectors</span>
+                ) : (
+                  <button className="buildbtn"
+                          disabled={building !== null}
+                          onClick={(e) => { e.stopPropagation(); build(o.chunk_size); }}>
+                    {building === o.chunk_size
+                      ? "Building…"
+                      : `Build · $${o.build_cost.toFixed(4)}`}
+                  </button>
+                )}
+              </div>
+            ))}
+
+            {building !== null && (
+              <p className="hint" style={{ marginTop: 12 }}>
+                Chunking, embedding and uploading — this takes 20–60 seconds.
+              </p>
+            )}
+            {err && <p className="hint" style={{ color: "#c0392b" }}>{err}</p>}
+
+            <p className="hint" style={{ marginTop: 16, marginBottom: 6 }}>
+              Chunk size is fixed when the index is built, so each setting is
+              embedded once into its own namespace. Once built, switching
+              between them is instant.
+            </p>
+
+            <hr style={{ border: 0, borderTop: "1px solid var(--line)",
+                         margin: "16px 0" }} />
+
+            <h2 style={{ fontSize: 15 }}>Passages per question</h2>
+            <div className="kval" style={{ fontSize: 24 }}>{k}</div>
             <input type="range" min="1" max="10" value={k}
                    onChange={(e) => setK(+e.target.value)} />
-
-            <div className="presets">
-              {[2, 4, 6, 8].map((n) => (
-                <button key={n}
-                        className={k === n ? "on" : ""}
-                        onClick={() => setK(n)}>
-                  {n}
-                </button>
-              ))}
-            </div>
-
-            <table className="guide">
-              <tbody>
-                <tr>
-                  <td>1 – 2</td>
-                  <td>Narrow. Best for a single specific fact; little room
-                      for irrelevant text to creep in.</td>
-                </tr>
-                <tr>
-                  <td>3 – 5</td>
-                  <td>The usual range. Enough context for most questions
-                      without diluting it.</td>
-                </tr>
-                <tr>
-                  <td>6 – 10</td>
-                  <td>Broad. Use when an answer feels incomplete or the topic
-                      is spread across the document. Costs more and can pull
-                      in noise.</td>
-                </tr>
-              </tbody>
-            </table>
+            <p className="hint" style={{ marginTop: 8, marginBottom: 0 }}>
+              How many chunks get retrieved and handed to the model. 3–5 suits
+              most questions; raise it when answers come back thin.
+            </p>
           </div>
 
           <div className="dlgfoot">
@@ -289,14 +345,22 @@
       const [status, setStatus] = useState(null);
       const [q, setQ] = useState("");
       const [k, setK] = useState(4);
+      const [chunk, setChunk] = useState(null);   // null = paragraph chunking
+      const [configs, setConfigs] = useState(null);
       const [dlg, setDlg] = useState(false);
       const [items, setItems] = useState([]);
       const busy = items.some((i) => i.loading);
       const box = useRef(null);
 
+      async function reloadConfigs() {
+        const r = await fetch("/api/configs");
+        setConfigs(await r.json());
+      }
+
       useEffect(() => {
         fetch("/api/status").then((r) => r.json()).then(setStatus)
           .catch((e) => setStatus({ ready: false, error: String(e) }));
+        reloadConfigs().catch(() => {});
       }, []);
 
       async function submit(question) {
@@ -311,7 +375,7 @@
           const res = await fetch("/api/ask", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ question: text, k }),
+            body: JSON.stringify({ question: text, k, chunk_size: chunk }),
           });
           const data = await res.json();
           setItems((prev) => prev.map((it) =>
@@ -363,7 +427,8 @@
 
             <div className="opts">
               <button className="gear" onClick={() => setDlg(true)}>
-                ⚙ Retrieval: {k} passage{k === 1 ? "" : "s"}
+                ⚙ Chunks: {chunk === null ? "by paragraph" : chunk + " chars"}
+                {" · "}top {k}
               </button>
               <span>Enter to send · Shift+Enter for a new line</span>
             </div>
@@ -379,8 +444,10 @@
 
           {items.map((it) => <Result key={it.id} item={it} />)}
 
-          <ChunkDialog k={k} setK={setK}
-                       open={dlg} onClose={() => setDlg(false)} />
+          <SettingsDialog k={k} setK={setK}
+                          chunk={chunk} setChunk={setChunk}
+                          configs={configs} reloadConfigs={reloadConfigs}
+                          open={dlg} onClose={() => setDlg(false)} />
         </div>
       );
     }

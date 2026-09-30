@@ -87,24 +87,48 @@ def ensure_index(pc: Pinecone, name: str, verbose: bool = True):
 # Build
 # --------------------------------------------------------------------------
 
-def build(name: str, namespace: str, verbose: bool = True) -> PineconeVectorStore:
+def chunk_for(docs, chunk_size: int | None):
+    """Chunk with the chosen strategy.
+
+    chunk_size=None gives paragraph chunking; a number gives fixed-size
+    recursive chunking at that many characters.
+    """
+    if chunk_size is None:
+        return core.split_documents_by_paragraph(docs)
+    return core.split_documents(docs, chunk_size, core.CHUNK_OVERLAP)
+
+
+def namespace_for(chunk_size: int | None) -> str:
+    """One namespace per chunking setting.
+
+    Keeping each setting in its own namespace means a size you have already
+    built stays built: switching back to it is instant, with no re-embedding.
+    """
+    return "paragraph" if chunk_size is None else f"chars{chunk_size}"
+
+
+def build(name: str, namespace: str, chunk_size: int | None = None,
+          verbose: bool = True) -> PineconeVectorStore:
     docs = core.load_documents()
     if not docs:
         raise SystemExit(f"No .txt or .md files found in {core.DOCS_DIR}")
 
-    chunks = core.split_documents_by_paragraph(docs)
+    chunks = chunk_for(docs, chunk_size)
 
     if verbose:
         texts = [c.page_content for c in chunks]
         tokens, cost = core.estimate_cost(texts)
         split_up = sum(1 for c in chunks if "part" in c.metadata)
+        strategy = (f"fixed {chunk_size} chars, {core.CHUNK_OVERLAP} overlap"
+                    if chunk_size
+                    else f"by paragraph (split only above {core.PARAGRAPH_MAX} chars)")
         print(core.BAR)
         print(f"Documents : {len(docs)} "
               f"({', '.join(sorted({d.metadata['file'] for d in docs}))})")
-        print(f"Chunking  : by paragraph "
-              f"(split only above {core.PARAGRAPH_MAX} chars)")
+        print(f"Chunking  : {strategy}")
         print(f"Chunks    : {core.chunk_stats(texts)}")
-        print(f"          : {split_up} oversized paragraph(s) had to be split")
+        if chunk_size is None:
+            print(f"          : {split_up} oversized paragraph(s) had to be split")
         print(f"Embedding : {core.EMBED_MODEL} ({DIMENSION} dims)")
         print(f"Tokens    : {tokens:,}  (about ${cost:.6f})")
         print(f"Vector DB : Pinecone index '{name}'"
@@ -259,9 +283,10 @@ def main() -> int:
                     help="show what the index contains, then exit")
     ap.add_argument("--index", default=INDEX_NAME,
                     help=f"Pinecone index name (default: {INDEX_NAME})")
-    ap.add_argument("--namespace", default="",
-                    help="Pinecone namespace - lets one index hold several "
-                         "separate document sets")
+    ap.add_argument("--namespace", default=None,
+                    help="Pinecone namespace (default: one per chunk setting)")
+    ap.add_argument("--chunk-size", type=int, default=None,
+                    help="characters per chunk. Omit for paragraph chunking.")
     ap.add_argument("-k", type=int, default=4,
                     help="how many chunks to retrieve (default: 4)")
     ap.add_argument("--model", default=core.CHAT_MODEL,
@@ -274,12 +299,14 @@ def main() -> int:
         show_stats(args.index)
         return 0
 
+    ns = args.namespace if args.namespace is not None else namespace_for(args.chunk_size)
+
     if args.build:
-        build(args.index, args.namespace)
+        build(args.index, ns, args.chunk_size)
         return 0
 
     try:
-        store = open_store(args.index, args.namespace)
+        store = open_store(args.index, ns)
     except SystemExit:
         raise
     except Exception as err:
@@ -293,8 +320,8 @@ def main() -> int:
         return 0
 
     print(core.BAR)
-    print(f"Pinecone RAG  |  index '{args.index}'  |  {args.model}  "
-          f"|  top {args.k}")
+    print(f"Pinecone RAG  |  '{args.index}'/{ns or 'default'}  |  "
+          f"{args.model}  |  top {args.k}")
     print("Ask a question, or 'exit' to quit.")
     print(core.BAR)
 

@@ -35,28 +35,43 @@ STATIC = Path(__file__).resolve().parent / "static"
 
 app = FastAPI(title="RAG over docs/")
 
-# Opening the store creates an embeddings client and a Pinecone connection, so
-# it is done once and reused rather than per request. Kept lazy so the server
-# still starts (and can report the problem) when Pinecone is unreachable.
-_store = None
-_error: str | None = None
+# The chunk sizes offered in the UI. None means paragraph chunking.
+# Each one lives in its own Pinecone namespace, so a setting you have already
+# built stays built and switching back to it needs no re-embedding.
+CHUNK_OPTIONS: list[int | None] = [None, 300, 500, 700, 1000]
+
+# Opening a store creates an embeddings client and a Pinecone connection, so
+# they are cached per namespace rather than rebuilt per request.
+_stores: dict[str, object] = {}
 
 
-def store():
-    global _store, _error
-    if _store is None and _error is None:
-        try:
-            _store = rag.open_store(rag.INDEX_NAME, "")
-        except SystemExit as exc:      # open_store raises this when unbuilt
-            _error = str(exc)
-        except Exception as exc:
-            _error = f"{type(exc).__name__}: {exc}"
-    return _store
+def store(namespace: str):
+    if namespace not in _stores:
+        _stores[namespace] = rag.open_store(rag.INDEX_NAME, namespace)
+    return _stores[namespace]
+
+
+def namespace_counts() -> dict[str, int]:
+    """Vector count per namespace - tells the UI which settings are built."""
+    try:
+        pc = rag.client()
+        if not pc.has_index(rag.INDEX_NAME):
+            return {}
+        stats = pc.Index(rag.INDEX_NAME).describe_index_stats()
+        return {ns: info.get("vector_count", 0)
+                for ns, info in (stats.get("namespaces") or {}).items()}
+    except Exception:
+        return {}
 
 
 class Question(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     k: int = Field(default=4, ge=1, le=20)
+    chunk_size: int | None = Field(default=None)
+
+
+class BuildRequest(BaseModel):
+    chunk_size: int | None = Field(default=None)
 
 
 @app.get("/api/status")
@@ -75,7 +90,6 @@ def status() -> dict:
             "vectors": stats.get("total_vector_count", 0),
             "model": core.CHAT_MODEL,
             "embed_model": core.EMBED_MODEL,
-            "chunking": "one chunk per paragraph",
         }
     except SystemExit as exc:
         return {"ready": False, "error": str(exc)}
@@ -83,21 +97,72 @@ def status() -> dict:
         return {"ready": False, "error": f"{type(exc).__name__}: {exc}"}
 
 
+@app.get("/api/configs")
+def configs() -> dict:
+    """Every chunk setting, and how many vectors each already holds."""
+    counts = namespace_counts()
+    docs = core.load_documents()
+    out = []
+    for size in CHUNK_OPTIONS:
+        ns = rag.namespace_for(size)
+        # Chunking is local and cheap, so the UI can show what a setting would
+        # produce before anyone pays to embed it.
+        texts = [c.page_content for c in rag.chunk_for(docs, size)]
+        sizes = [len(t) for t in texts] or [0]
+        tokens, cost = core.estimate_cost(texts)
+        out.append({
+            "chunk_size": size,
+            "label": "By paragraph" if size is None else f"{size} characters",
+            "namespace": ns,
+            "built": counts.get(ns, 0) > 0,
+            "vectors": counts.get(ns, 0),
+            "would_make": len(texts),
+            "smallest": min(sizes),
+            "largest": max(sizes),
+            "average": sum(sizes) // len(sizes),
+            "build_cost": round(cost, 6),
+        })
+    return {"options": out, "overlap": core.CHUNK_OVERLAP}
+
+
+@app.post("/api/build")
+def build(req: BuildRequest) -> dict:
+    """Chunk, embed and upload one setting. Takes tens of seconds."""
+    ns = rag.namespace_for(req.chunk_size)
+    try:
+        rag.build(rag.INDEX_NAME, ns, req.chunk_size, verbose=False)
+        _stores.pop(ns, None)          # force a reopen against fresh vectors
+        return {"ok": True, "namespace": ns,
+                "vectors": namespace_counts().get(ns, 0)}
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
 @app.post("/api/ask")
 def ask(q: Question) -> dict:
-    s = store()
-    if s is None:
-        return {"error": _error or "The index is not available."}
+    ns = rag.namespace_for(q.chunk_size)
+    if namespace_counts().get(ns, 0) == 0:
+        return {"error": f"Nothing indexed for this chunk setting yet. "
+                         f"Open the chunking dialog and build it first."}
     try:
         # The CLI's own function - no retrieval or prompting logic here.
-        return rag.ask(s, q.question, k=q.k, model=core.CHAT_MODEL)
+        result = rag.ask(store(ns), q.question, k=q.k, model=core.CHAT_MODEL)
+        result["chunking"] = ("by paragraph" if q.chunk_size is None
+                              else f"{q.chunk_size} characters")
+        return result
     except Exception as exc:
         return {"error": f"{type(exc).__name__}: {exc}"}
 
 
 @app.get("/")
 def index() -> FileResponse:
-    return FileResponse(STATIC / "index.html")
+    # no-store: this is a local dev tool and the page is edited constantly.
+    # Without it the browser can serve a cached copy without revalidating,
+    # so an edit appears to have had no effect.
+    return FileResponse(
+        STATIC / "index.html",
+        headers={"Cache-Control": "no-store, must-revalidate"},
+    )
 
 
 app.mount("/static", StaticFiles(directory=STATIC), name="static")

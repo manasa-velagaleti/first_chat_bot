@@ -97,6 +97,43 @@
     .more { background: none; border: 0; color: var(--accent); padding: 4px 0;
             font-size: 12px; font-weight: 600; cursor: pointer; }
 
+    /* --- settings dialog --- */
+    .gear {
+      background: transparent; border: 1px solid var(--line); color: var(--ink);
+      font-size: 13px; font-weight: 500; padding: 5px 12px; border-radius: 8px;
+    }
+    .gear:hover { border-color: var(--accent); color: var(--accent); }
+    dialog {
+      border: 1px solid var(--line); border-radius: 14px; padding: 0;
+      background: var(--card); color: var(--ink); max-width: 460px; width: 92%;
+      box-shadow: 0 16px 48px rgba(0,0,0,.22);
+    }
+    dialog::backdrop { background: rgba(0,0,0,.45); }
+    .dlg { padding: 22px 24px 20px; }
+    .dlg h2 { margin: 0 0 4px; font-size: 17px; }
+    .dlg .hint { color: var(--muted); font-size: 13px; margin: 0 0 18px; }
+    .kval { font-size: 30px; font-weight: 700; color: var(--accent);
+            text-align: center; margin: 4px 0 2px; }
+    .kcap { text-align: center; color: var(--muted); font-size: 12px;
+            margin-bottom: 14px; }
+    .dlg input[type=range] { width: 100%; }
+    .presets { display: flex; gap: 6px; margin: 14px 0 4px; }
+    .presets button {
+      flex: 1; background: transparent; border: 1px solid var(--line);
+      color: var(--muted); font-size: 13px; font-weight: 500; padding: 7px 0;
+      border-radius: 8px;
+    }
+    .presets button.on { border-color: var(--accent); color: var(--accent);
+                         background: var(--accent-soft); font-weight: 700; }
+    .guide { width: 100%; border-collapse: collapse; margin-top: 16px;
+             font-size: 13px; }
+    .guide td { padding: 6px 0; border-top: 1px solid var(--line);
+                color: var(--muted); vertical-align: top; }
+    .guide td:first-child { color: var(--ink); font-weight: 600;
+                            white-space: nowrap; padding-right: 14px; }
+    .dlgfoot { display: flex; justify-content: flex-end; gap: 8px;
+               padding: 14px 24px; border-top: 1px solid var(--line); }
+
     .err { border-color: #e2b4b4; background: #fdf3f3; color: #8a2b2b; }
     @media (prefers-color-scheme: dark) {
       .err { background: #2a1d1d; border-color: #5a3535; color: #f3b9b9; }
@@ -148,6 +185,73 @@
       );
     }
 
+    function ChunkDialog({ k, setK, open, onClose }) {
+      const ref = useRef(null);
+
+      // <dialog> is opened imperatively, so the DOM has to be told whenever
+      // React's `open` prop changes. showModal() also gives Escape-to-close
+      // and a focus trap for free.
+      useEffect(() => {
+        const d = ref.current;
+        if (!d) return;
+        if (open && !d.open) d.showModal();
+        if (!open && d.open) d.close();
+      }, [open]);
+
+      return (
+        <dialog ref={ref} onClose={onClose}>
+          <div className="dlg">
+            <h2>Retrieval settings</h2>
+            <p className="hint">
+              How many passages to pull from Pinecone and hand to the model
+              as context.
+            </p>
+
+            <div className="kval">{k}</div>
+            <div className="kcap">passage{k === 1 ? "" : "s"} per question</div>
+
+            <input type="range" min="1" max="10" value={k}
+                   onChange={(e) => setK(+e.target.value)} />
+
+            <div className="presets">
+              {[2, 4, 6, 8].map((n) => (
+                <button key={n}
+                        className={k === n ? "on" : ""}
+                        onClick={() => setK(n)}>
+                  {n}
+                </button>
+              ))}
+            </div>
+
+            <table className="guide">
+              <tbody>
+                <tr>
+                  <td>1 – 2</td>
+                  <td>Narrow. Best for a single specific fact; little room
+                      for irrelevant text to creep in.</td>
+                </tr>
+                <tr>
+                  <td>3 – 5</td>
+                  <td>The usual range. Enough context for most questions
+                      without diluting it.</td>
+                </tr>
+                <tr>
+                  <td>6 – 10</td>
+                  <td>Broad. Use when an answer feels incomplete or the topic
+                      is spread across the document. Costs more and can pull
+                      in noise.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div className="dlgfoot">
+            <button onClick={onClose}>Done</button>
+          </div>
+        </dialog>
+      );
+    }
+
     function Result({ item }) {
       if (item.error) {
         return (
@@ -185,6 +289,7 @@
       const [status, setStatus] = useState(null);
       const [q, setQ] = useState("");
       const [k, setK] = useState(4);
+      const [dlg, setDlg] = useState(false);
       const [items, setItems] = useState([]);
       const busy = items.some((i) => i.loading);
       const box = useRef(null);
@@ -257,11 +362,9 @@
             </div>
 
             <div className="opts">
-              <label>
-                Passages to retrieve: <b>{k}</b>{" "}
-                <input type="range" min="1" max="10" value={k}
-                       onChange={(e) => setK(+e.target.value)} />
-              </label>
+              <button className="gear" onClick={() => setDlg(true)}>
+                ⚙ Retrieval: {k} passage{k === 1 ? "" : "s"}
+              </button>
               <span>Enter to send · Shift+Enter for a new line</span>
             </div>
 
@@ -275,6 +378,9 @@
           </div>
 
           {items.map((it) => <Result key={it.id} item={it} />)}
+
+          <ChunkDialog k={k} setK={setK}
+                       open={dlg} onClose={() => setDlg(false)} />
         </div>
       );
     }

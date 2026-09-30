@@ -26,9 +26,17 @@ the example questions. Answers appear newest-first with the passages they came
 from underneath — score, source file, paragraph number, and the text itself.
 Long paragraphs are clipped with a "Show full paragraph" toggle.
 
-The **Passages to retrieve** slider is `k`: how many chunks get pulled from
-Pinecone and handed to the model. More context for broad questions, less noise
-for narrow ones.
+The **⚙ Retrieval** button opens a settings dialog for `k` — how many chunks get
+pulled from Pinecone and handed to the model. It has a slider, quick presets
+(2/4/6/8) and a short guide to picking a value:
+
+| k | When |
+|---|------|
+| 1–2 | A single specific fact; little room for irrelevant text |
+| 3–5 | The usual range — enough context without diluting it |
+| 6–10 | An answer feels incomplete, or the topic is spread out. Costs more, can pull in noise |
+
+It's a native `<dialog>`, so Escape closes it and focus is trapped while open.
 
 One of the example questions — *"What is his favourite pizza topping?"* — is there
 on purpose. It should come back saying the documents don't cover it. If it ever

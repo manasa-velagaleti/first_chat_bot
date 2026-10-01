@@ -81,7 +81,8 @@ class BuildRequest(BaseModel):
 
 # --- documents ------------------------------------------------------------
 
-ALLOWED = {".txt", ".md", ".pdf"}
+# Whatever core knows how to read - no second list to keep in sync.
+ALLOWED = set(core.SUPPORTED)
 MAX_UPLOAD = 25 * 1024 * 1024        # 25 MB
 MANIFEST = Path(__file__).resolve().parent / ".built.json"
 
@@ -183,7 +184,8 @@ def configs() -> dict:
             "build_cost": round(cost, 6),
         })
     return {"options": out, "overlap": core.CHUNK_OVERLAP,
-            "documents": list_documents()}
+            "documents": list_documents(),
+            "accepts": sorted(ALLOWED)}
 
 
 @app.post("/api/build")
@@ -218,7 +220,8 @@ def ask(q: Question) -> dict:
 
 @app.get("/api/documents")
 def documents() -> dict:
-    return {"documents": list_documents()}
+    return {"documents": list_documents(),
+            "accepts": sorted(ALLOWED)}
 
 
 @app.post("/api/upload")
@@ -232,7 +235,7 @@ async def upload(file: UploadFile = File(...)) -> dict:
     suffix = Path(raw_name).suffix.lower()
     if suffix not in ALLOWED:
         return {"error": f"{suffix or 'That file type'} is not supported. "
-                         f"Use .txt, .md or .pdf."}
+                         f"Use {', '.join(sorted(ALLOWED))}."}
 
     # Keep the name recognisable but safe to put on disk.
     safe = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(raw_name).stem)[:80] or "document"
@@ -260,13 +263,13 @@ async def upload(file: UploadFile = File(...)) -> dict:
     # Confirm it is actually readable before reporting success - a corrupt PDF
     # would otherwise only fail later, during a build.
     try:
-        loaded = [d for d in core.load_documents()
-                  if d.metadata.get("file") == target.name]
+        loaded = core.load_one(target)
         chars = sum(len(d.page_content) for d in loaded)
         if chars == 0:
             target.unlink(missing_ok=True)
-            return {"error": "No text could be extracted. A scanned PDF "
-                             "needs OCR before it can be indexed."}
+            return {"error": "No text could be extracted from that file. "
+                             "A scanned PDF is images of text, and needs OCR "
+                             "before it can be indexed."}
     except Exception as exc:
         target.unlink(missing_ok=True)
         return {"error": f"Could not read the file: {exc}"}

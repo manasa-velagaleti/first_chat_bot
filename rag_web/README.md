@@ -37,8 +37,7 @@ Long paragraphs are clipped with a "Show full paragraph" toggle.
 The **⚙ Chunks** button opens a settings dialog with three sections.
 
 **Documents** — the same upload control as the main page, plus the file list.
-Drop a file on the box, or click to choose one. `.txt`, `.md`
-and `.pdf` up to 25 MB. Uploads land in the project's `docs/` folder, so the CLIs
+Drop a file on the box, or click to choose one. `.txt`, `.md`, `.pdf`, `.docx` and `.csv`, up to 25 MB. Uploads land in the project's `docs/` folder, so the CLIs
 pick them up too. Each document is listed with its size and an × to remove it.
 
 A file is only accepted once its text has actually been extracted — a scanned PDF

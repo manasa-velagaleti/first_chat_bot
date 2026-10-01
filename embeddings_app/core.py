@@ -22,7 +22,9 @@ from dotenv import load_dotenv
 warnings.filterwarnings("ignore")   # langchain-community sunset notice
 
 from langchain_community.document_loaders import (
+    CSVLoader,
     DirectoryLoader,
+    Docx2txtLoader,
     PyPDFLoader,
     TextLoader,
 )
@@ -82,6 +84,24 @@ PARAGRAPH_MAX = 1500
 PARAGRAPH_MIN = 15
 
 BAR = "=" * 74
+
+# --- supported file types -------------------------------------------------
+# extension -> (loader class, extra kwargs). Adding a format is one line here;
+# load_documents() and the upload endpoint both read from this, so neither can
+# drift from the other about what is accepted.
+#
+# utf-8 is explicit on the text loaders: the default on Windows is cp1252,
+# which fails on curly quotes and em-dashes. Binary formats carry their own
+# encoding, so they take no such argument.
+LOADERS: dict[str, tuple[type, dict]] = {
+    ".txt":  (TextLoader, {"encoding": "utf-8"}),
+    ".md":   (TextLoader, {"encoding": "utf-8"}),
+    ".pdf":  (PyPDFLoader, {}),          # one Document per page
+    ".docx": (Docx2txtLoader, {}),
+    ".csv":  (CSVLoader, {"encoding": "utf-8"}),   # one Document per row
+}
+
+SUPPORTED = tuple(LOADERS)
 
 
 # --- helpers --------------------------------------------------------------
@@ -160,28 +180,33 @@ def load_documents(docs_dir: Path = DOCS_DIR) -> list[Document]:
     # material. Indexing them would put noise in retrieval.
     exclude = ["**/img/**"]
 
-    for pattern in ("**/*.txt", "**/*.md"):
+    for ext, (loader_cls, kwargs) in LOADERS.items():
         docs.extend(DirectoryLoader(
             str(docs_dir),
-            glob=pattern,
+            glob=f"**/*{ext}",
             exclude=exclude,
-            loader_cls=TextLoader,
-            # Explicit encoding: the default on Windows is cp1252, which fails
-            # on the curly quotes in these documents.
-            loader_kwargs={"encoding": "utf-8"},
+            loader_cls=loader_cls,
+            loader_kwargs=kwargs,
             silent_errors=True,
         ).load())
 
-    # PDFs need their own loader, and it takes no encoding argument - a PDF
-    # carries its own text encoding. PyPDFLoader yields one Document per page.
-    docs.extend(DirectoryLoader(
-        str(docs_dir),
-        glob="**/*.pdf",
-        exclude=exclude,
-        loader_cls=PyPDFLoader,
-        silent_errors=True,
-    ).load())
+    return _tidy(docs)
 
+
+def load_one(path: Path) -> list[Document]:
+    """Load a single file.
+
+    Used to validate an upload. Checking one file this way takes a moment;
+    re-reading the whole corpus to check it took ten seconds once a large PDF
+    was present, which looked to the user like a failed upload.
+    """
+    loader_cls, kwargs = LOADERS.get(path.suffix.lower(), (None, None))
+    if loader_cls is None:
+        raise ValueError(f"{path.suffix} is not a supported file type")
+    return _tidy(loader_cls(str(path), **(kwargs or {})).load())
+
+
+def _tidy(docs: list[Document]) -> list[Document]:
     for d in docs:
         d.metadata["file"] = Path(d.metadata.get("source", "?")).name
         # PyPDFLoader numbers pages from 0; +1 matches what a reader shows.

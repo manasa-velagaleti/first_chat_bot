@@ -288,9 +288,9 @@
                  }}>
               {uploading
                 ? `Uploading ${uploading}…`
-                : "Drop a file here, or click to choose · .txt .md .pdf"}
+                : `Drop a file here, or click to choose · ${(configs?.accepts || []).join(" ")}`}
             </div>
-            <input ref={filePick} type="file" accept=".txt,.md,.pdf"
+            <input ref={filePick} type="file" accept={configs?.accepts?.join(",") || ".txt,.md,.pdf,.docx,.csv"}
                    style={{ display: "none" }}
                    onChange={(e) => upload(e.target.files?.[0])} />
 
@@ -556,15 +556,19 @@
                   {configs.documents.map((d) => d.name).join(", ")}
                 </>
               ) : (
-                "No documents yet — upload one to get started"
+                <>No documents yet — upload one to get started{" "}
+                  <span style={{ opacity: .7 }}>
+                    ({(configs?.accepts || []).join(" ")})
+                  </span>
+                </>
               )}
             </span>
             <button className="upbtn"
                     disabled={uploading !== null}
                     onClick={() => filePick.current?.click()}>
-              + Upload document
+              {uploading ? "Uploading…" : "+ Upload document"}
             </button>
-            <input ref={filePick} type="file" accept=".txt,.md,.pdf"
+            <input ref={filePick} type="file" accept={configs?.accepts?.join(",") || ".txt,.md,.pdf,.docx,.csv"}
                    style={{ display: "none" }}
                    onChange={(e) => upload(e.target.files?.[0])} />
           </div>

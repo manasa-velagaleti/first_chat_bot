@@ -15,3 +15,6 @@ embeddings_app/out/
 
 # FAISS index - a build artefact, regenerate with: rag.py --build
 embeddings_app/faiss_index/
+
+# Which corpus each Pinecone namespace was built from
+rag_web/.built.json

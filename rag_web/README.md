@@ -26,7 +26,20 @@ the example questions. Answers appear newest-first with the passages they came
 from underneath — score, source file, paragraph number, and the text itself.
 Long paragraphs are clipped with a "Show full paragraph" toggle.
 
-The **⚙ Chunks** button opens a settings dialog with two controls.
+The **⚙ Chunks** button opens a settings dialog with three sections.
+
+**Documents** — drop a file on the box, or click to choose one. `.txt`, `.md`
+and `.pdf` up to 25 MB. Uploads land in the project's `docs/` folder, so the CLIs
+pick them up too. Each document is listed with its size and an × to remove it.
+
+A file is only accepted once its text has actually been extracted — a scanned PDF
+with no text layer is rejected with an explanation rather than silently indexing
+to nothing.
+
+**Changing the documents makes every built index stale**, and the dialog says so:
+affected chunk settings switch from a vector count to a **Rebuild** button. A
+namespace whose origin isn't recorded counts as stale too — one rebuild beats
+silently answering from unknown text.
 
 **Chunk size** — how the documents are cut up before being embedded. Smaller
 chunks are more precise, larger ones carry more context:

@@ -21,7 +21,11 @@ from dotenv import load_dotenv
 
 warnings.filterwarnings("ignore")   # langchain-community sunset notice
 
-from langchain_community.document_loaders import DirectoryLoader, TextLoader
+from langchain_community.document_loaders import (
+    DirectoryLoader,
+    PyPDFLoader,
+    TextLoader,
+)
 from langchain_core.documents import Document
 from langchain_openai import OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -68,6 +72,14 @@ SEPARATORS = ["\n\n", "\n", ". ", " ", ""]
 # recursively, because a single 5,000-character chunk would dilute its own
 # embedding until it matched nothing in particular.
 PARAGRAPH_MAX = 1500
+
+# And the floor. A PDF page is full of one- and two-word lines - headings,
+# table cells, page numbers - and splitting on newlines turns each into its
+# own "paragraph". Embedding a 1-character chunk produces a vector that means
+# nothing and can still win a similarity search, so anything shorter than this
+# is dropped. Plain prose is unaffected; the shortest real paragraph in the
+# SOTU address is 20 characters, which is why this sits below that.
+PARAGRAPH_MIN = 15
 
 BAR = "=" * 74
 
@@ -122,7 +134,7 @@ def split_documents_by_paragraph(docs: list[Document],
         blocks = [p.strip() for p in doc.page_content.split("\n\n")]
         if len(blocks) <= 1:
             blocks = [p.strip() for p in doc.page_content.split("\n")]
-        paragraphs = [p for p in blocks if p]
+        paragraphs = [p for p in blocks if len(p) >= PARAGRAPH_MIN]
 
         for para_no, para in enumerate(paragraphs):
             pieces = [para] if len(para) <= max_chars else splitter.split_text(para)
@@ -143,23 +155,41 @@ def split_documents_by_paragraph(docs: list[Document],
 def load_documents(docs_dir: Path = DOCS_DIR) -> list[Document]:
     """Every .txt and .md under docs/, so new files are picked up on rebuild."""
     docs: list[Document] = []
+
+    # docs/img/ holds screenshots and their caption file - assets, not source
+    # material. Indexing them would put noise in retrieval.
+    exclude = ["**/img/**"]
+
     for pattern in ("**/*.txt", "**/*.md"):
-        loader = DirectoryLoader(
+        docs.extend(DirectoryLoader(
             str(docs_dir),
             glob=pattern,
-            # docs/img/ holds screenshots and their caption file - assets, not
-            # source material. Indexing them would put noise in retrieval.
-            exclude=["**/img/**"],
+            exclude=exclude,
             loader_cls=TextLoader,
             # Explicit encoding: the default on Windows is cp1252, which fails
             # on the curly quotes in these documents.
             loader_kwargs={"encoding": "utf-8"},
             silent_errors=True,
-        )
-        docs.extend(loader.load())
+        ).load())
+
+    # PDFs need their own loader, and it takes no encoding argument - a PDF
+    # carries its own text encoding. PyPDFLoader yields one Document per page.
+    docs.extend(DirectoryLoader(
+        str(docs_dir),
+        glob="**/*.pdf",
+        exclude=exclude,
+        loader_cls=PyPDFLoader,
+        silent_errors=True,
+    ).load())
 
     for d in docs:
         d.metadata["file"] = Path(d.metadata.get("source", "?")).name
+        # PyPDFLoader numbers pages from 0; +1 matches what a reader shows.
+        if "page" in d.metadata:
+            try:
+                d.metadata["page"] = int(d.metadata["page"]) + 1
+            except (TypeError, ValueError):
+                pass
     return docs
 
 

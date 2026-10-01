@@ -15,6 +15,10 @@ Endpoints:
 
 from __future__ import annotations
 
+import hashlib
+import json
+import re
+import shutil
 import sys
 from pathlib import Path
 
@@ -26,12 +30,13 @@ sys.path.insert(0, str(ROOT / "embeddings_app"))
 import core                                    # noqa: E402  (loads .env)
 import rag_pinecone as rag                     # noqa: E402
 
-from fastapi import FastAPI                    # noqa: E402
+from fastapi import FastAPI, File, UploadFile  # noqa: E402
 from fastapi.responses import FileResponse     # noqa: E402
 from fastapi.staticfiles import StaticFiles    # noqa: E402
 from pydantic import BaseModel, Field          # noqa: E402
 
 STATIC = Path(__file__).resolve().parent / "static"
+DOCS_DIR = ROOT / "docs"
 
 app = FastAPI(title="RAG over docs/")
 
@@ -74,6 +79,53 @@ class BuildRequest(BaseModel):
     chunk_size: int | None = Field(default=None)
 
 
+# --- documents ------------------------------------------------------------
+
+ALLOWED = {".txt", ".md", ".pdf"}
+MAX_UPLOAD = 25 * 1024 * 1024        # 25 MB
+MANIFEST = Path(__file__).resolve().parent / ".built.json"
+
+
+def corpus_fingerprint() -> str:
+    """A hash of the current documents: name, size and mtime of each.
+
+    Recorded when a namespace is built. If it later differs, that namespace
+    holds vectors for documents that have since changed - so the UI can say
+    "rebuild needed" instead of quietly answering from stale text.
+    """
+    parts = []
+    for p in sorted(DOCS_DIR.rglob("*")):
+        if p.is_file() and p.suffix.lower() in ALLOWED and "img" not in p.parts:
+            st = p.stat()
+            parts.append(f"{p.name}:{st.st_size}:{int(st.st_mtime)}")
+    return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
+
+
+def read_manifest() -> dict:
+    try:
+        return json.loads(MANIFEST.read_text())
+    except Exception:
+        return {}
+
+
+def record_built(namespace: str) -> None:
+    m = read_manifest()
+    m[namespace] = corpus_fingerprint()
+    MANIFEST.write_text(json.dumps(m, indent=2))
+
+
+def list_documents() -> list[dict]:
+    out = []
+    for p in sorted(DOCS_DIR.rglob("*")):
+        if p.is_file() and p.suffix.lower() in ALLOWED and "img" not in p.parts:
+            out.append({
+                "name": p.name,
+                "kind": p.suffix.lower().lstrip("."),
+                "kb": round(p.stat().st_size / 1024, 1),
+            })
+    return out
+
+
 @app.get("/api/status")
 def status() -> dict:
     """What the page shows in its header, and whether asking will work."""
@@ -101,6 +153,8 @@ def status() -> dict:
 def configs() -> dict:
     """Every chunk setting, and how many vectors each already holds."""
     counts = namespace_counts()
+    manifest = read_manifest()
+    fingerprint = corpus_fingerprint()
     docs = core.load_documents()
     out = []
     for size in CHUNK_OPTIONS:
@@ -115,6 +169,12 @@ def configs() -> dict:
             "label": "By paragraph" if size is None else f"{size} characters",
             "namespace": ns,
             "built": counts.get(ns, 0) > 0,
+            # Built, but from a different set of documents than are here now.
+            # An unrecorded namespace counts as stale too: it holds vectors of
+            # unknown provenance, and silently answering from them is worse
+            # than asking for one rebuild.
+            "stale": (counts.get(ns, 0) > 0
+                      and manifest.get(ns) != fingerprint),
             "vectors": counts.get(ns, 0),
             "would_make": len(texts),
             "smallest": min(sizes),
@@ -122,7 +182,8 @@ def configs() -> dict:
             "average": sum(sizes) // len(sizes),
             "build_cost": round(cost, 6),
         })
-    return {"options": out, "overlap": core.CHUNK_OVERLAP}
+    return {"options": out, "overlap": core.CHUNK_OVERLAP,
+            "documents": list_documents()}
 
 
 @app.post("/api/build")
@@ -132,6 +193,7 @@ def build(req: BuildRequest) -> dict:
     try:
         rag.build(rag.INDEX_NAME, ns, req.chunk_size, verbose=False)
         _stores.pop(ns, None)          # force a reopen against fresh vectors
+        record_built(ns)
         return {"ok": True, "namespace": ns,
                 "vectors": namespace_counts().get(ns, 0)}
     except Exception as exc:
@@ -152,6 +214,75 @@ def ask(q: Question) -> dict:
         return result
     except Exception as exc:
         return {"error": f"{type(exc).__name__}: {exc}"}
+
+
+@app.get("/api/documents")
+def documents() -> dict:
+    return {"documents": list_documents()}
+
+
+@app.post("/api/upload")
+async def upload(file: UploadFile = File(...)) -> dict:
+    """Accept a document and drop it into docs/.
+
+    Saved into the same folder the CLIs read, so an uploaded file is picked
+    up by rag.py and embed.py too - not just this page.
+    """
+    raw_name = Path(file.filename or "").name          # strip any path
+    suffix = Path(raw_name).suffix.lower()
+    if suffix not in ALLOWED:
+        return {"error": f"{suffix or 'That file type'} is not supported. "
+                         f"Use .txt, .md or .pdf."}
+
+    # Keep the name recognisable but safe to put on disk.
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(raw_name).stem)[:80] or "document"
+    target = DOCS_DIR / f"{safe}{suffix}"
+    n = 1
+    while target.exists():
+        target = DOCS_DIR / f"{safe}_{n}{suffix}"
+        n += 1
+
+    size = 0
+    try:
+        with target.open("wb") as out:
+            while chunk := await file.read(1 << 20):
+                size += len(chunk)
+                if size > MAX_UPLOAD:
+                    out.close()
+                    target.unlink(missing_ok=True)
+                    return {"error": f"File is larger than "
+                                     f"{MAX_UPLOAD // (1024*1024)} MB."}
+                out.write(chunk)
+    except Exception as exc:
+        target.unlink(missing_ok=True)
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+    # Confirm it is actually readable before reporting success - a corrupt PDF
+    # would otherwise only fail later, during a build.
+    try:
+        loaded = [d for d in core.load_documents()
+                  if d.metadata.get("file") == target.name]
+        chars = sum(len(d.page_content) for d in loaded)
+        if chars == 0:
+            target.unlink(missing_ok=True)
+            return {"error": "No text could be extracted. A scanned PDF "
+                             "needs OCR before it can be indexed."}
+    except Exception as exc:
+        target.unlink(missing_ok=True)
+        return {"error": f"Could not read the file: {exc}"}
+
+    return {"ok": True, "name": target.name, "kb": round(size / 1024, 1),
+            "parts": len(loaded), "characters": chars,
+            "documents": list_documents()}
+
+
+@app.delete("/api/documents/{name}")
+def delete_document(name: str) -> dict:
+    target = DOCS_DIR / Path(name).name          # no path traversal
+    if not target.exists() or target.suffix.lower() not in ALLOWED:
+        return {"error": "No such document."}
+    target.unlink()
+    return {"ok": True, "documents": list_documents()}
 
 
 @app.get("/")

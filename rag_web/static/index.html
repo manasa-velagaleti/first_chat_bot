@@ -149,6 +149,31 @@
     .buildbtn { font-size: 12px; padding: 6px 12px; border-radius: 8px;
                 white-space: nowrap; }
 
+    .drop {
+      border: 2px dashed var(--line); border-radius: 10px; padding: 18px;
+      text-align: center; color: var(--muted); font-size: 13px;
+      cursor: pointer; margin-bottom: 12px;
+    }
+    .drop.over { border-color: var(--accent); background: var(--accent-soft);
+                 color: var(--accent); }
+    .doc {
+      display: flex; align-items: center; gap: 10px; font-size: 13px;
+      padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px;
+      margin-bottom: 6px;
+    }
+    .doc .kind {
+      font-size: 10px; font-weight: 700; text-transform: uppercase;
+      background: var(--accent-soft); color: var(--accent);
+      padding: 2px 6px; border-radius: 4px;
+    }
+    .doc .nm { flex: 1; min-width: 0; overflow: hidden;
+               text-overflow: ellipsis; white-space: nowrap; }
+    .doc .sz { color: var(--muted); font-size: 12px; }
+    .doc .x { background: none; border: 0; color: var(--muted);
+              cursor: pointer; font-size: 15px; padding: 0 2px; }
+    .doc .x:hover { color: #c0392b; }
+    .stale { color: #b06a00; font-size: 12px; font-weight: 600; }
+
     .err { border-color: #e2b4b4; background: #fdf3f3; color: #8a2b2b; }
     @media (prefers-color-scheme: dark) {
       .err { background: #2a1d1d; border-color: #5a3535; color: #f3b9b9; }
@@ -183,7 +208,9 @@
           <div className="srctop">
             <span className="num">{s.n}</span>
             <span>{s.file}</span>
-            {s.paragraph !== null && <span>· paragraph {s.paragraph}</span>}
+            {s.page != null && <span>· page {s.page}</span>}
+            {s.page == null && s.paragraph !== null &&
+              <span>· paragraph {s.paragraph}</span>}
             {s.part && <span>· part {s.part}</span>}
             <div className="bar"><i style={{ width: pct + "%" }} /></div>
             <span>{s.score.toFixed(3)}</span>
@@ -205,6 +232,35 @@
       const ref = useRef(null);
       const [building, setBuilding] = useState(null);
       const [err, setErr] = useState(null);
+      const [uploading, setUploading] = useState(null);
+      const [over, setOver] = useState(false);
+      const filePick = useRef(null);
+
+      async function send(file) {
+        setErr(null);
+        setUploading(file.name);
+        try {
+          const fd = new FormData();
+          fd.append("file", file);
+          const res = await fetch("/api/upload", { method: "POST", body: fd });
+          const data = await res.json();
+          if (data.error) setErr(data.error);
+          else await reloadConfigs();
+        } catch (e) {
+          setErr(String(e));
+        }
+        setUploading(null);
+        if (filePick.current) filePick.current.value = "";
+      }
+
+      async function remove(name) {
+        setErr(null);
+        try {
+          await fetch("/api/documents/" + encodeURIComponent(name),
+                      { method: "DELETE" });
+          await reloadConfigs();
+        } catch (e) { setErr(String(e)); }
+      }
 
       // <dialog> is opened imperatively, so the DOM has to be told whenever
       // React's `open` prop changes. showModal() also gives Escape-to-close
@@ -239,6 +295,41 @@
       return (
         <dialog ref={ref} onClose={onClose}>
           <div className="dlg">
+            <h2>Documents</h2>
+            <p className="hint">
+              Anything you add here is what the answers come from.
+              Text, Markdown or PDF.
+            </p>
+
+            <div className={"drop" + (over ? " over" : "")}
+                 onClick={() => filePick.current?.click()}
+                 onDragOver={(e) => { e.preventDefault(); setOver(true); }}
+                 onDragLeave={() => setOver(false)}
+                 onDrop={(e) => {
+                   e.preventDefault(); setOver(false);
+                   if (e.dataTransfer.files?.[0]) send(e.dataTransfer.files[0]);
+                 }}>
+              {uploading
+                ? `Uploading ${uploading}…`
+                : "Drop a file here, or click to choose · .txt .md .pdf"}
+            </div>
+            <input ref={filePick} type="file" accept=".txt,.md,.pdf"
+                   style={{ display: "none" }}
+                   onChange={(e) => e.target.files?.[0] && send(e.target.files[0])} />
+
+            {configs?.documents?.map((d) => (
+              <div className="doc" key={d.name}>
+                <span className="kind">{d.kind}</span>
+                <span className="nm" title={d.name}>{d.name}</span>
+                <span className="sz">{d.kb} KB</span>
+                <button className="x" title="Remove"
+                        onClick={() => remove(d.name)}>×</button>
+              </div>
+            ))}
+
+            <hr style={{ border: 0, borderTop: "1px solid var(--line)",
+                         margin: "18px 0" }} />
+
             <h2>Chunk size</h2>
             <p className="hint">
               How the documents are cut up before being embedded. Smaller
@@ -254,15 +345,23 @@
                 <div className="optmain">
                   <div className="optlabel">
                     {o.label}
-                    {o.chunk_size === chunk && <span className="tick">✓ in use</span>}
+                    {o.chunk_size === chunk && !o.stale &&
+                      <span className="tick">✓ in use</span>}
+                    {o.stale && <span className="stale"> · documents changed</span>}
                   </div>
                   <div className="optmeta">
                     {o.would_make} chunks · {o.smallest}–{o.largest} chars ·
                     avg {o.average}
                   </div>
                 </div>
-                {o.built ? (
+                {o.built && !o.stale ? (
                   <span className="built">{o.vectors} vectors</span>
+                ) : o.stale ? (
+                  <button className="buildbtn"
+                          disabled={building !== null}
+                          onClick={(e) => { e.stopPropagation(); build(o.chunk_size); }}>
+                    {building === o.chunk_size ? "Rebuilding…" : "Rebuild"}
+                  </button>
                 ) : (
                   <button className="buildbtn"
                           disabled={building !== null}

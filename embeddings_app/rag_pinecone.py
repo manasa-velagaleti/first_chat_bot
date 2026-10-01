@@ -237,11 +237,15 @@ def ask(store: PineconeVectorStore, question: str, k: int = 4,
         # Pinecone stores metadata numbers as floats, so an int that went in
         # as 33 comes back as 33.0 - cast it before displaying.
         para = doc.metadata.get("paragraph")
+        page = doc.metadata.get("page")
         sources.append({
             "n": n,
             "score": round(float(score), 3),
             "file": doc.metadata.get("file", "?"),
             "paragraph": int(para) if para is not None else None,
+            # PDFs carry a page number instead of a paragraph index; it is far
+            # more useful for finding the passage in an 80-page filing.
+            "page": int(page) if page is not None else None,
             "part": doc.metadata.get("part"),
             "text": doc.page_content,
         })
@@ -260,8 +264,12 @@ def answer(store: PineconeVectorStore, question: str, k: int, model: str,
         print(f"Retrieved {len(result['sources'])} excerpts "
               f"(cosine similarity: higher = closer match)")
         for s in result["sources"]:
-            where = (f"paragraph {s['paragraph']}"
-                     if s["paragraph"] is not None else "paragraph ?")
+            if s.get("page") is not None:
+                where = f"page {s['page']}"
+            elif s["paragraph"] is not None:
+                where = f"paragraph {s['paragraph']}"
+            else:
+                where = "?"
             if s["part"]:
                 where += f" part {s['part']}"
             print(f"  [{s['n']}] score {s['score']:.3f} | {s['file']} {where}")

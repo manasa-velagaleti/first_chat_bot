@@ -149,6 +149,29 @@
     .buildbtn { font-size: 12px; padding: 6px 12px; border-radius: 8px;
                 white-space: nowrap; }
 
+    .docbar {
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+      background: var(--card); border: 1px solid var(--line);
+      border-radius: 10px; padding: 10px 14px; margin: 18px 0 0;
+      font-size: 13px;
+    }
+    .docbar.over { border-color: var(--accent); background: var(--accent-soft); }
+    .docbar .files { flex: 1; min-width: 0; color: var(--muted); }
+    .docbar .files b { color: var(--ink); font-weight: 600; }
+    .upbtn {
+      padding: 7px 14px; font-size: 13px; border-radius: 8px; white-space: nowrap;
+    }
+    .needbuild {
+      background: #fff6e5; border: 1px solid #f0d9a8; color: #7a5200;
+      border-radius: 10px; padding: 10px 14px; margin-top: 10px; font-size: 13px;
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    }
+    @media (prefers-color-scheme: dark) {
+      .needbuild { background: #2a2416; border-color: #4d421f;
+                   color: #e8cf96; }
+    }
+    .needbuild button { padding: 6px 12px; font-size: 12px; border-radius: 7px; }
+
     .drop {
       border: 2px dashed var(--line); border-radius: 10px; padding: 18px;
       text-align: center; color: var(--muted); font-size: 13px;
@@ -228,40 +251,11 @@
     }
 
     function SettingsDialog({ k, setK, chunk, setChunk, open, onClose,
-                              configs, reloadConfigs }) {
+                              configs, upload, removeDoc, build, building,
+                              uploading, err }) {
       const ref = useRef(null);
-      const [building, setBuilding] = useState(null);
-      const [err, setErr] = useState(null);
-      const [uploading, setUploading] = useState(null);
       const [over, setOver] = useState(false);
       const filePick = useRef(null);
-
-      async function send(file) {
-        setErr(null);
-        setUploading(file.name);
-        try {
-          const fd = new FormData();
-          fd.append("file", file);
-          const res = await fetch("/api/upload", { method: "POST", body: fd });
-          const data = await res.json();
-          if (data.error) setErr(data.error);
-          else await reloadConfigs();
-        } catch (e) {
-          setErr(String(e));
-        }
-        setUploading(null);
-        if (filePick.current) filePick.current.value = "";
-      }
-
-      async function remove(name) {
-        setErr(null);
-        try {
-          await fetch("/api/documents/" + encodeURIComponent(name),
-                      { method: "DELETE" });
-          await reloadConfigs();
-        } catch (e) { setErr(String(e)); }
-      }
-
       // <dialog> is opened imperatively, so the DOM has to be told whenever
       // React's `open` prop changes. showModal() also gives Escape-to-close
       // and a focus trap for free.
@@ -274,23 +268,6 @@
 
       const current = configs?.options?.find((o) => o.chunk_size === chunk);
 
-      async function build(size) {
-        setBuilding(size);
-        setErr(null);
-        try {
-          const res = await fetch("/api/build", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ chunk_size: size }),
-          });
-          const data = await res.json();
-          if (data.error) setErr(data.error);
-          else await reloadConfigs();
-        } catch (e) {
-          setErr(String(e));
-        }
-        setBuilding(null);
-      }
 
       return (
         <dialog ref={ref} onClose={onClose}>
@@ -307,7 +284,7 @@
                  onDragLeave={() => setOver(false)}
                  onDrop={(e) => {
                    e.preventDefault(); setOver(false);
-                   if (e.dataTransfer.files?.[0]) send(e.dataTransfer.files[0]);
+                   upload(e.dataTransfer.files?.[0]);
                  }}>
               {uploading
                 ? `Uploading ${uploading}…`
@@ -315,7 +292,7 @@
             </div>
             <input ref={filePick} type="file" accept=".txt,.md,.pdf"
                    style={{ display: "none" }}
-                   onChange={(e) => e.target.files?.[0] && send(e.target.files[0])} />
+                   onChange={(e) => upload(e.target.files?.[0])} />
 
             {configs?.documents?.map((d) => (
               <div className="doc" key={d.name}>
@@ -323,7 +300,7 @@
                 <span className="nm" title={d.name}>{d.name}</span>
                 <span className="sz">{d.kb} KB</span>
                 <button className="x" title="Remove"
-                        onClick={() => remove(d.name)}>×</button>
+                        onClick={() => removeDoc(d.name)}>×</button>
               </div>
             ))}
 
@@ -447,13 +424,64 @@
       const [chunk, setChunk] = useState(null);   // null = paragraph chunking
       const [configs, setConfigs] = useState(null);
       const [dlg, setDlg] = useState(false);
+      const [uploading, setUploading] = useState(null);
+      const [over, setOver] = useState(false);
+      const [upErr, setUpErr] = useState(null);
+      const [building, setBuilding] = useState(null);
+      const filePick = useRef(null);
       const [items, setItems] = useState([]);
       const busy = items.some((i) => i.loading);
+      const activeCfg = configs?.options?.find((o) => o.chunk_size === chunk);
+      // Nothing indexed for this setting, or indexed from older documents.
+      const needsBuild = !!activeCfg && (!activeCfg.built || activeCfg.stale);
       const box = useRef(null);
 
       async function reloadConfigs() {
         const r = await fetch("/api/configs");
         setConfigs(await r.json());
+      }
+
+      async function upload(file) {
+        if (!file) return;
+        setUpErr(null);
+        setUploading(file.name);
+        try {
+          const fd = new FormData();
+          fd.append("file", file);
+          const res = await fetch("/api/upload", { method: "POST", body: fd });
+          const data = await res.json();
+          if (data.error) setUpErr(data.error);
+          else await reloadConfigs();
+        } catch (e) {
+          setUpErr(String(e));
+        }
+        setUploading(null);
+        if (filePick.current) filePick.current.value = "";
+      }
+
+      async function removeDoc(name) {
+        setUpErr(null);
+        try {
+          await fetch("/api/documents/" + encodeURIComponent(name),
+                      { method: "DELETE" });
+          await reloadConfigs();
+        } catch (e) { setUpErr(String(e)); }
+      }
+
+      async function buildChunk(size) {
+        setBuilding(size);
+        setUpErr(null);
+        try {
+          const res = await fetch("/api/build", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ chunk_size: size }),
+          });
+          const data = await res.json();
+          if (data.error) setUpErr(data.error);
+          else await reloadConfigs();
+        } catch (e) { setUpErr(String(e)); }
+        setBuilding(null);
       }
 
       useEffect(() => {
@@ -510,6 +538,55 @@
             </div>
           </header>
 
+          <div className={"docbar" + (over ? " over" : "")}
+               onDragOver={(e) => { e.preventDefault(); setOver(true); }}
+               onDragLeave={() => setOver(false)}
+               onDrop={(e) => {
+                 e.preventDefault(); setOver(false);
+                 upload(e.dataTransfer.files?.[0]);
+               }}>
+            <span className="files">
+              {uploading ? (
+                <>Uploading <b>{uploading}</b>…</>
+              ) : configs?.documents?.length ? (
+                <>
+                  <b>{configs.documents.length} document
+                    {configs.documents.length === 1 ? "" : "s"}</b>
+                  {" · "}
+                  {configs.documents.map((d) => d.name).join(", ")}
+                </>
+              ) : (
+                "No documents yet — upload one to get started"
+              )}
+            </span>
+            <button className="upbtn"
+                    disabled={uploading !== null}
+                    onClick={() => filePick.current?.click()}>
+              + Upload document
+            </button>
+            <input ref={filePick} type="file" accept=".txt,.md,.pdf"
+                   style={{ display: "none" }}
+                   onChange={(e) => upload(e.target.files?.[0])} />
+          </div>
+
+          {upErr && (
+            <div className="card err" style={{ marginTop: 10 }}>{upErr}</div>
+          )}
+
+          {needsBuild && (
+            <div className="needbuild">
+              <span style={{ flex: 1 }}>
+                The documents changed. Rebuild the
+                <b> {chunk === null ? "paragraph" : chunk + " character"} </b>
+                index so answers use them.
+              </span>
+              <button disabled={building !== null}
+                      onClick={() => buildChunk(chunk)}>
+                {building !== null ? "Rebuilding…" : "Rebuild now"}
+              </button>
+            </div>
+          )}
+
           <div className="ask">
             <div className="row">
               <textarea
@@ -545,7 +622,10 @@
 
           <SettingsDialog k={k} setK={setK}
                           chunk={chunk} setChunk={setChunk}
-                          configs={configs} reloadConfigs={reloadConfigs}
+                          configs={configs}
+                          upload={upload} removeDoc={removeDoc}
+                          build={buildChunk} building={building}
+                          uploading={uploading} err={upErr}
                           open={dlg} onClose={() => setDlg(false)} />
         </div>
       );

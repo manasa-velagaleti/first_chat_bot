@@ -21,6 +21,14 @@ The Pinecone index must already exist. If the header shows an error, build it:
 
 ## Using it
 
+A **document bar** sits under the header showing what is currently indexed, with
+a **+ Upload document** button. You can also drag a file onto the bar. Upload is a
+primary action, so it lives on the page rather than inside the settings dialog.
+
+When the documents change, a banner appears offering **Rebuild now** for the chunk
+setting you are using — answers come from the index, so a new document is invisible
+until it has been embedded.
+
 Type a question and press **Enter** (Shift+Enter for a new line), or click one of
 the example questions. Answers appear newest-first with the passages they came
 from underneath — score, source file, paragraph number, and the text itself.
@@ -28,7 +36,8 @@ Long paragraphs are clipped with a "Show full paragraph" toggle.
 
 The **⚙ Chunks** button opens a settings dialog with three sections.
 
-**Documents** — drop a file on the box, or click to choose one. `.txt`, `.md`
+**Documents** — the same upload control as the main page, plus the file list.
+Drop a file on the box, or click to choose one. `.txt`, `.md`
 and `.pdf` up to 25 MB. Uploads land in the project's `docs/` folder, so the CLIs
 pick them up too. Each document is listed with its size and an × to remove it.
 

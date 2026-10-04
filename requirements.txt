@@ -27,6 +27,8 @@ pinecone
 # Document loading for the RAG corpus
 pypdf        # .pdf
 docx2txt     # .docx
+rapidocr     # OCR fallback for scanned PDFs
+rapidocr-onnxruntime
 
 # Web API for the RAG page (rag_web/)
 fastapi

@@ -15,6 +15,7 @@ tool lie about the system it is meant to explain.
 from __future__ import annotations
 
 import warnings
+import logging
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -181,6 +182,18 @@ def load_documents(docs_dir: Path = DOCS_DIR) -> list[Document]:
     exclude = ["**/img/**"]
 
     for ext, (loader_cls, kwargs) in LOADERS.items():
+        if ext == ".pdf":
+            # One at a time, so a scanned PDF can fall back to OCR on its own
+            # without the others paying for it.
+            for pdf in sorted(docs_dir.rglob("*.pdf")):
+                if "img" in pdf.parts:
+                    continue
+                try:
+                    docs.extend(load_pdf(pdf))
+                except Exception:
+                    continue        # unreadable file: skip, don't abort
+            continue
+
         docs.extend(DirectoryLoader(
             str(docs_dir),
             glob=f"**/*{ext}",
@@ -193,6 +206,41 @@ def load_documents(docs_dir: Path = DOCS_DIR) -> list[Document]:
     return _tidy(docs)
 
 
+def load_pdf(path: Path) -> list[Document]:
+    """Read a PDF, falling back to OCR when it has no text layer.
+
+    A PDF made by a word processor carries real text and reads in a moment.
+    A scanned one is photographs of paper: pypdf finds nothing in it, which
+    is not an error - there genuinely is no text, only pixels.
+
+    So: try the fast path, and only when it comes back empty spend the time
+    on OCR. Running OCR unconditionally would add minutes to every ordinary
+    PDF for no benefit.
+    """
+    docs = PyPDFLoader(str(path)).load()
+    if sum(len(d.page_content.strip()) for d in docs):
+        return docs
+
+    try:
+        from langchain_community.document_loaders.parsers import RapidOCRBlobParser
+    except ImportError:
+        return docs        # OCR not installed; caller reports "no text"
+
+    # RapidOCR chatters about model files on every call.
+    noisy = logging.getLogger("RapidOCR")
+    was = noisy.level
+    noisy.setLevel(logging.WARNING)
+    try:
+        return PyPDFLoader(
+            str(path), mode="page", extract_images=True,
+            images_parser=RapidOCRBlobParser(),
+        ).load()
+    except Exception:
+        return docs        # OCR failed; fall back to the empty result
+    finally:
+        noisy.setLevel(was)
+
+
 def load_one(path: Path) -> list[Document]:
     """Load a single file.
 
@@ -200,7 +248,11 @@ def load_one(path: Path) -> list[Document]:
     re-reading the whole corpus to check it took ten seconds once a large PDF
     was present, which looked to the user like a failed upload.
     """
-    loader_cls, kwargs = LOADERS.get(path.suffix.lower(), (None, None))
+    suffix = path.suffix.lower()
+    if suffix == ".pdf":
+        return _tidy(load_pdf(path))
+
+    loader_cls, kwargs = LOADERS.get(suffix, (None, None))
     if loader_cls is None:
         raise ValueError(f"{path.suffix} is not a supported file type")
     return _tidy(loader_cls(str(path), **(kwargs or {})).load())

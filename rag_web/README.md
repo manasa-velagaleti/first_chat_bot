@@ -40,9 +40,14 @@ The **⚙ Chunks** button opens a settings dialog with three sections.
 Drop a file on the box, or click to choose one. `.txt`, `.md`, `.pdf`, `.docx` and `.csv`, up to 25 MB. Uploads land in the project's `docs/` folder, so the CLIs
 pick them up too. Each document is listed with its size and an × to remove it.
 
-A file is only accepted once its text has actually been extracted — a scanned PDF
-with no text layer is rejected with an explanation rather than silently indexing
-to nothing.
+A file is only accepted once its text has actually been extracted, so nothing
+silently indexes to nothing.
+
+**Scanned PDFs work too.** A PDF with no text layer is photographs of paper —
+pypdf finds nothing in it. When that happens the file is run through OCR
+(RapidOCR) instead. Ordinary PDFs never pay for this: OCR only runs after plain
+extraction comes back empty, so a text PDF is unaffected and a scan takes a few
+seconds longer.
 
 **Changing the documents makes every built index stale**, and the dialog says so:
 affected chunk settings switch from a vector count to a **Rebuild** button. A

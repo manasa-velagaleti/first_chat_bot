@@ -267,9 +267,9 @@ async def upload(file: UploadFile = File(...)) -> dict:
         chars = sum(len(d.page_content) for d in loaded)
         if chars == 0:
             target.unlink(missing_ok=True)
-            return {"error": "No text could be extracted from that file. "
-                             "A scanned PDF is images of text, and needs OCR "
-                             "before it can be indexed."}
+            return {"error": "No text could be extracted from that file, "
+                             "even with OCR. If it is a scan, it may be too "
+                             "low-resolution or skewed to read."}
     except Exception as exc:
         target.unlink(missing_ok=True)
         return {"error": f"Could not read the file: {exc}"}

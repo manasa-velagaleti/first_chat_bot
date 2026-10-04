@@ -185,6 +185,21 @@ def render_text(spec: cfg.ParamSpec, base: str, current: Any) -> list[str]:
 
 
 # --- sidebar ---------------------------------------------------------------
+cur = chat()
+chat_sess = sessions.get(cur["sid"])
+
+# What this chat can search: documents shared across the app, plus any
+# attached to this chat alone. A chat with its own files still sees the
+# shared ones - attaching a document narrows nothing.
+search_ns = []
+shared_sess = sessions.get(st.session_state.shared_sid)
+if shared_sess and shared_sess.files:
+    search_ns.append(shared_sess.namespace)
+if chat_sess and chat_sess.files:
+    search_ns.append(chat_sess.namespace)
+if not search_ns:
+    search_ns = [DOC_NAMESPACE]        # fall back to the saved corpus
+
 with st.sidebar:
     st.subheader("Chats")
     if st.button("➕ New chat", width="stretch", type="primary"):
@@ -325,6 +340,30 @@ with st.sidebar:
     st.divider()
 
     # "New chat" lives at the top of the sidebar with the chat list now.
+    st.divider()
+    with st.expander("🔍 Browse chunks"):
+        st.caption("Every chunk the assistant can search — not just the ones "
+                   "a question retrieved. This is how your documents were "
+                   "actually cut up.")
+        if st.button("Load chunks", key="load_chunks"):
+            st.session_state.chunks = rag_tools.all_chunks(search_ns)
+
+        chunks = st.session_state.get("chunks")
+        if chunks:
+            files = sorted({c["file"] for c in chunks})
+            pick = st.selectbox("Document", ["All"] + files, key="chunk_file")
+            shown = [c for c in chunks if pick == "All" or c["file"] == pick]
+            st.caption(f"{len(shown)} chunk{'' if len(shown) == 1 else 's'}")
+
+            per = 10
+            pages = max(1, (len(shown) + per - 1) // per)
+            page = st.number_input("Page", 1, pages, 1, key="chunk_page") if pages > 1 else 1
+            for c in shown[(page - 1) * per: page * per]:
+                where = f" · p{c['page']}" if c["page"] is not None else ""
+                st.caption(f"**{c['file']}**{where} · {len(c['text'])} chars")
+                st.text(" ".join(c["text"].split())[:400])
+
+    st.divider()
     if st.button("Reset params", width="stretch"):
         st.session_state.settings = cfg.default_settings()
         for spec in cfg.PARAM_SPECS:
@@ -353,21 +392,6 @@ def render_sources(sources):
                        + f" · score {src['score']}")
             st.markdown(f"> {' '.join(src['text'].split())}")
 
-
-cur = chat()
-chat_sess = sessions.get(cur["sid"])
-
-# What this chat can search: documents shared across the app, plus any
-# attached to this chat alone. A chat with its own files still sees the
-# shared ones - attaching a document narrows nothing.
-search_ns = []
-shared_sess = sessions.get(st.session_state.shared_sid)
-if shared_sess and shared_sess.files:
-    search_ns.append(shared_sess.namespace)
-if chat_sess and chat_sess.files:
-    search_ns.append(chat_sess.namespace)
-if not search_ns:
-    search_ns = [DOC_NAMESPACE]        # fall back to the saved corpus
 
 st.title("💬 " + cur["title"])
 bits = [f"{provider.label} · {model_name}"]

@@ -455,6 +455,15 @@ def explain_error(err: Exception, provider: Provider, model_name: str) -> str:
             "for each one."
         )
 
+    if "503" in text or "unavailable" in low or "overloaded" in low:
+        return (
+            f"**{provider.label} is overloaded right now**, not your app or "
+            f"your documents.\n\n"
+            f"`{model_name}` is temporarily refusing requests. Try again in a "
+            f"moment, or switch to another model in the sidebar - the "
+            f"conversation carries over."
+        )
+
     if "api key" in low or "401" in text or "unauthorized" in low or "permission" in low:
         return (
             f"**{provider.label} rejected the API key.**\n\n"

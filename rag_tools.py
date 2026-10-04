@@ -155,3 +155,57 @@ def make_search_tool(thread_id: str, namespaces, k: int = 4):
     if about:
         search_documents.description = search_documents.description + about
     return search_documents
+
+
+def all_chunks(namespaces, limit: int = 2000) -> list[dict]:
+    """Every chunk stored in these namespaces, in document order.
+
+    Pinecone has no "list everything" query - list() gives ids and fetch()
+    turns ids into records, so this pages through both. Fine for a corpus of
+    this size; a very large index would want a cursor rather than a cap.
+
+    This is what "show me the chunks" actually means. The search tool returns
+    the best k for a question, which is a different thing and cannot answer
+    "how was this document cut up?".
+    """
+    if isinstance(namespaces, str):
+        namespaces = [namespaces]
+
+    out: list[dict] = []
+    try:
+        pc = rag.client()
+        if not pc.has_index(rag.INDEX_NAME):
+            return []
+        index = pc.Index(rag.INDEX_NAME)
+    except Exception:
+        return []
+
+    for ns in [n for n in namespaces if n]:
+        ids: list[str] = []
+        try:
+            for page in index.list(namespace=ns, limit=100):
+                ids.extend(page)
+                if len(ids) >= limit:
+                    break
+        except Exception:
+            continue
+
+        for i in range(0, len(ids), 100):
+            try:
+                got = index.fetch(ids=ids[i:i + 100], namespace=ns)
+            except Exception:
+                continue
+            for vec in got.vectors.values():
+                meta = vec.metadata or {}
+                out.append({
+                    "file": meta.get("file", "?"),
+                    "page": int(meta["page"]) if meta.get("page") is not None else None,
+                    "chunk": int(meta["chunk"]) if meta.get("chunk") is not None else None,
+                    "text": meta.get("text", ""),
+                    "namespace": ns,
+                })
+
+    # Document order, so the list reads the way the document does.
+    out.sort(key=lambda c: (c["file"], c["page"] if c["page"] is not None else 0,
+                            c["chunk"] if c["chunk"] is not None else 0))
+    return out

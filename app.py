@@ -6,6 +6,12 @@ from typing import Any
 
 import streamlit as st
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent / "embeddings_app"))
+
+import core                          # noqa: E402  SUPPORTED types
+import sessions                      # noqa: E402  shared with rag_web
 import config as cfg
 import rag_tools
 from chatbot import build_agent, reset_thread, stream_reply
@@ -36,6 +42,12 @@ if "thread_id" not in st.session_state:
     st.session_state.thread_id = "chat-1"
 if "use_docs" not in st.session_state:
     st.session_state.use_docs = True
+if "upload_round" not in st.session_state:
+    st.session_state.upload_round = 0
+if "sid" not in st.session_state:
+    # One scratch corpus per browser session. Uploads live in an OS temp
+    # folder and are discarded when it is cleared.
+    st.session_state.sid = sessions.start().id
 
 
 # --- widget builders -------------------------------------------------------
@@ -183,13 +195,47 @@ with st.sidebar:
         st.session_state.use_docs = st.toggle(
             "Search my documents",
             value=st.session_state.use_docs,
-            help="When on, the assistant searches your indexed documents if a "
-                 "question looks like it relates to them. Ordinary chat is "
-                 "unaffected - it only searches when it judges it useful.",
+            help="When on, the assistant searches your documents if a question "
+                 "looks like it relates to them. Ordinary chat is unaffected - "
+                 "it only searches when it judges it useful.",
         )
-        if st.session_state.use_docs:
+
+        sess = sessions.get(st.session_state.sid)
+
+        upload = st.file_uploader(
+            "Add a document",
+            type=[e.lstrip(".") for e in core.SUPPORTED],
+            help="Read and embedded straight away, then searchable. Kept in a "
+                 "temporary folder outside this project and deleted when you "
+                 "clear the session.",
+            key=f"up_{st.session_state.upload_round}",
+        )
+        if upload is not None and sess is not None:
+            with st.spinner(f"Reading and embedding {upload.name}…"):
+                res = sessions.add_document(sess, upload.name, upload.getvalue())
+            if res.get("error"):
+                st.error(res["error"])
+            else:
+                st.success(f"{res['name']} — {res['chunks']} chunks")
+                rag_tools.drop_store(sess.namespace)   # reopen on new vectors
+            # Reset the widget so the same file can be re-added after a clear,
+            # and so this block does not re-run on the next interaction.
+            st.session_state.upload_round += 1
+            st.rerun()
+
+        if sess and sess.files:
+            st.caption("**This session**")
+            for f in sess.files:
+                st.caption(f"· {f['name']} — {f['chunks']} chunks")
+            if st.button("Clear session documents", width="stretch"):
+                sessions.clear(sess.id)
+                rag_tools.drop_store(sess.namespace)
+                st.session_state.sid = sessions.start().id
+                st.rerun()
+            st.caption("Searching your uploads only.")
+        else:
             corpus = rag_tools.describe_corpus(DOC_NAMESPACE)
-            st.caption(f"Searching: {corpus}" if corpus
+            st.caption(f"Searching saved documents: {corpus}" if corpus
                        else "No documents indexed yet.")
     else:
         st.info(f"`{model_name}` can't use tools, so it can't search "
@@ -296,7 +342,13 @@ if prompt := st.chat_input("Ask me anything"):
             tools = None
             if can_search and st.session_state.use_docs:
                 rag_tools.clear_sources(thread)     # so stale hits aren't shown
-                tools = [rag_tools.make_search_tool(thread, DOC_NAMESPACE, k=4)]
+                # Uploads take precedence: if you put a document into this
+                # session, that is what you mean by "my documents". Falling
+                # back to the saved corpus would answer from files you did not
+                # just hand over - the failure that is hardest to spot.
+                sess = sessions.get(st.session_state.sid)
+                ns = sess.namespace if (sess and sess.files) else DOC_NAMESPACE
+                tools = [rag_tools.make_search_tool(thread, ns, k=4)]
 
             # Rebuilt every message so the current settings apply, while the
             # shared checkpointer keeps the conversation intact.

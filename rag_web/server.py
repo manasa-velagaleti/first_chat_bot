@@ -266,10 +266,12 @@ async def upload(file: UploadFile = File(...)) -> dict:
         loaded = core.load_one(target)
         chars = sum(len(d.page_content) for d in loaded)
         if chars == 0:
+            detail = (core.describe_pdf(target)
+                      if suffix == ".pdf" else "the file appears to be empty")
             target.unlink(missing_ok=True)
-            return {"error": "No text could be extracted from that file, "
-                             "even with OCR. If it is a scan, it may be too "
-                             "low-resolution or skewed to read."}
+            return {"error": f"No text could be read from that file - {detail}. "
+                             f"If it is a scan, a higher-resolution or "
+                             f"straighter copy usually works."}
     except Exception as exc:
         target.unlink(missing_ok=True)
         return {"error": f"Could not read the file: {exc}"}

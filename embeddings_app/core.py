@@ -221,24 +221,64 @@ def load_pdf(path: Path) -> list[Document]:
     if sum(len(d.page_content.strip()) for d in docs):
         return docs
 
-    try:
-        from langchain_community.document_loaders.parsers import RapidOCRBlobParser
-    except ImportError:
-        return docs        # OCR not installed; caller reports "no text"
+    ocr = ocr_pdf(path)
+    return ocr if ocr else docs
 
-    # RapidOCR chatters about model files on every call.
+
+def ocr_pdf(path: Path, scale: float = 2.0) -> list[Document]:
+    """OCR a PDF by rendering each page to a bitmap and reading that.
+
+    Rendering rather than pulling out the embedded images: a scanner can
+    store a page as CCITT or JBIG2, or as dozens of image strips, and
+    extracting those relies on the PDF library decoding each format. Drawing
+    the page the way a viewer would sidesteps all of it - whatever the page
+    looks like on screen is what gets read.
+
+    scale 2.0 is roughly 144 dpi. Higher reads small print better and costs
+    proportionally more time.
+    """
+    try:
+        import numpy as np
+        import pypdfium2 as pdfium
+        from rapidocr import RapidOCR
+    except ImportError:
+        return []          # OCR extras not installed
+
+    # RapidOCR logs several lines about model files on every single call.
     noisy = logging.getLogger("RapidOCR")
     was = noisy.level
-    noisy.setLevel(logging.WARNING)
+    noisy.setLevel(logging.ERROR)
     try:
-        return PyPDFLoader(
-            str(path), mode="page", extract_images=True,
-            images_parser=RapidOCRBlobParser(),
-        ).load()
+        engine = RapidOCR()
+        pdf = pdfium.PdfDocument(str(path))
+        out: list[Document] = []
+        for i in range(len(pdf)):
+            image = pdf[i].render(scale=scale).to_pil().convert("RGB")
+            result = engine(np.array(image))
+            text = "\n".join(result.txts) if result and result.txts else ""
+            if text.strip():
+                out.append(Document(
+                    page_content=text,
+                    metadata={"source": str(path), "page": i, "ocr": True},
+                ))
+        return out
     except Exception:
-        return docs        # OCR failed; fall back to the empty result
+        return []
     finally:
         noisy.setLevel(was)
+
+
+def describe_pdf(path: Path) -> str:
+    """Why a PDF yielded no text - for an error message worth acting on."""
+    try:
+        import pypdfium2 as pdfium
+        pdf = pdfium.PdfDocument(str(path))
+        return f"{len(pdf)} page(s), no text layer and OCR found nothing readable"
+    except Exception as exc:
+        msg = str(exc).lower()
+        if "password" in msg or "encrypt" in msg:
+            return "the file is password-protected"
+        return f"the file could not be opened ({type(exc).__name__})"
 
 
 def load_one(path: Path) -> list[Document]:

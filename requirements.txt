@@ -29,6 +29,7 @@ pypdf        # .pdf
 docx2txt     # .docx
 rapidocr     # OCR fallback for scanned PDFs
 rapidocr-onnxruntime
+pypdfium2    # renders PDF pages to bitmaps for OCR
 
 # Web API for the RAG page (rag_web/)
 fastapi

@@ -44,8 +44,11 @@ A file is only accepted once its text has actually been extracted, so nothing
 silently indexes to nothing.
 
 **Scanned PDFs work too.** A PDF with no text layer is photographs of paper —
-pypdf finds nothing in it. When that happens the file is run through OCR
-(RapidOCR) instead. Ordinary PDFs never pay for this: OCR only runs after plain
+pypdf finds nothing in it. When that happens each page is **rendered to a bitmap
+and read with OCR** (RapidOCR), the way a person reading the screen would.
+Rendering rather than extracting the embedded images matters: a scanner may store
+a page as CCITT or JBIG2 or as dozens of strips, and pulling those out depends on
+the PDF library decoding each format. Ordinary PDFs never pay for this: OCR only runs after plain
 extraction comes back empty, so a text PDF is unaffected and a scan takes a few
 seconds longer.
 

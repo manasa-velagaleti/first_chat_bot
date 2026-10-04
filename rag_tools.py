@@ -78,14 +78,24 @@ def describe_corpus(namespace: str) -> str:
         return ""
 
 
-def make_search_tool(thread_id: str, namespace: str = "", k: int = 4):
+def make_search_tool(thread_id: str, namespaces, k: int = 4):
     """Build the search tool for one conversation.
 
-    A factory rather than a module-level tool because the thread id, namespace
+    A factory rather than a module-level tool because the thread id, namespaces
     and k all vary per conversation, and a @tool function takes only the
     arguments the model supplies.
+
+    namespaces may be one name or several. Several is the normal case: a chat
+    searches the documents shared across the app *and* any attached to that
+    chat alone. Pinecone queries one namespace at a time, so each is searched
+    and the results merged on score - they are comparable because every
+    namespace is embedded with the same model.
     """
-    corpus = describe_corpus(namespace)
+    if isinstance(namespaces, str):
+        namespaces = [namespaces]
+    namespaces = [n for n in namespaces if n]
+
+    corpus = ", ".join(filter(None, (describe_corpus(n) for n in namespaces)))
     about = f" The documents available are: {corpus}." if corpus else ""
 
     @tool
@@ -103,10 +113,18 @@ def make_search_tool(thread_id: str, namespace: str = "", k: int = 4):
         Args:
             query: What to look for, phrased as the user would describe it.
         """
-        try:
-            hits = _store(namespace).similarity_search_with_score(query, k=k)
-        except Exception as exc:
-            return f"The document search is unavailable: {type(exc).__name__}: {exc}"
+        hits = []
+        for ns in namespaces:
+            try:
+                hits.extend(_store(ns).similarity_search_with_score(query, k=k))
+            except Exception as exc:
+                # One namespace failing should not lose the others.
+                if len(namespaces) == 1:
+                    return (f"The document search is unavailable: "
+                            f"{type(exc).__name__}: {exc}")
+        # Cosine similarity: higher is closer, so the best come first.
+        hits.sort(key=lambda h: h[1], reverse=True)
+        hits = hits[:k]
 
         if not hits:
             return "No passages in the documents matched that."

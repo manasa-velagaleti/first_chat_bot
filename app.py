@@ -14,7 +14,7 @@ import core                          # noqa: E402  SUPPORTED types
 import sessions                      # noqa: E402  shared with rag_web
 import config as cfg
 import rag_tools
-from chatbot import build_agent, reset_thread, stream_reply
+from chatbot import build_agent, stream_reply
 
 st.set_page_config(page_title="Chat Assistant", page_icon="💬", layout="wide")
 
@@ -36,18 +36,46 @@ DOC_NAMESPACE = "chars700"
 # --- session state ---------------------------------------------------------
 if "settings" not in st.session_state:
     st.session_state.settings = cfg.default_settings()
-if "history" not in st.session_state:
-    st.session_state.history = []          # [(role, text, caption, sources)]
-if "thread_id" not in st.session_state:
-    st.session_state.thread_id = "chat-1"
+# --- chats ------------------------------------------------------------------
+# Several conversations per run. Each owns its message history, its LangGraph
+# thread (so memory stays separate), and its own scratch corpus for documents
+# attached to that chat alone. Nothing is persisted - this lasts the session.
+if "chats" not in st.session_state:
+    st.session_state.chats = {}
+    st.session_state.chat_order = []
+    st.session_state.current = None
+
+
+def new_chat() -> str:
+    n = len(st.session_state.chat_order) + 1
+    cid = f"chat-{n}-{len(st.session_state.chats)}"
+    st.session_state.chats[cid] = {
+        "title": f"Chat {n}",
+        "history": [],                 # [(role, text, caption, sources)]
+        "thread": cid,                 # LangGraph thread id
+        "sid": sessions.start().id,    # this chat's own documents
+    }
+    st.session_state.chat_order.append(cid)
+    st.session_state.current = cid
+    return cid
+
+
+def chat() -> dict:
+    if st.session_state.current not in st.session_state.chats:
+        new_chat()
+    return st.session_state.chats[st.session_state.current]
+
+
+if not st.session_state.chats:
+    new_chat()
 if "use_docs" not in st.session_state:
     st.session_state.use_docs = True
 if "upload_round" not in st.session_state:
     st.session_state.upload_round = 0
-if "sid" not in st.session_state:
-    # One scratch corpus per browser session. Uploads live in an OS temp
-    # folder and are discarded when it is cleared.
-    st.session_state.sid = sessions.start().id
+if "shared_sid" not in st.session_state:
+    # Documents uploaded in the sidebar: visible to every chat in this run.
+    # Per-chat documents live in each chat's own session instead.
+    st.session_state.shared_sid = sessions.start().id
 
 
 # --- widget builders -------------------------------------------------------
@@ -158,6 +186,22 @@ def render_text(spec: cfg.ParamSpec, base: str, current: Any) -> list[str]:
 
 # --- sidebar ---------------------------------------------------------------
 with st.sidebar:
+    st.subheader("Chats")
+    if st.button("➕ New chat", width="stretch", type="primary"):
+        new_chat()
+        st.rerun()
+
+    for cid in st.session_state.chat_order:
+        c = st.session_state.chats[cid]
+        docs = len(sessions.get(c["sid"]).files) if sessions.get(c["sid"]) else 0
+        label = c["title"] + (f"  📎{docs}" if docs else "")
+        if st.button(label, key=f"go_{cid}", width="stretch",
+                     type="secondary",
+                     disabled=cid == st.session_state.current):
+            st.session_state.current = cid
+            st.rerun()
+
+    st.divider()
     st.subheader("Model")
 
     provider = st.selectbox(
@@ -200,43 +244,43 @@ with st.sidebar:
                  "it only searches when it judges it useful.",
         )
 
-        sess = sessions.get(st.session_state.sid)
+        shared = sessions.get(st.session_state.shared_sid)
 
         upload = st.file_uploader(
-            "Add a document",
+            "Add a document for every chat",
             type=[e.lstrip(".") for e in core.SUPPORTED],
-            help="Read and embedded straight away, then searchable. Kept in a "
-                 "temporary folder outside this project and deleted when you "
-                 "clear the session.",
+            help="Embedded on upload and searchable from any chat. Kept in a "
+                 "temporary folder outside this project, and gone when you "
+                 "clear it or close the app. To attach a document to one chat "
+                 "only, use the paperclip in the chat box instead.",
             key=f"up_{st.session_state.upload_round}",
         )
-        if upload is not None and sess is not None:
+        if upload is not None and shared is not None:
             with st.spinner(f"Reading and embedding {upload.name}…"):
-                res = sessions.add_document(sess, upload.name, upload.getvalue())
+                res = sessions.add_document(shared, upload.name, upload.getvalue())
             if res.get("error"):
                 st.error(res["error"])
             else:
                 st.success(f"{res['name']} — {res['chunks']} chunks")
-                rag_tools.drop_store(sess.namespace)   # reopen on new vectors
+                rag_tools.drop_store(shared.namespace)  # reopen on new vectors
             # Reset the widget so the same file can be re-added after a clear,
             # and so this block does not re-run on the next interaction.
             st.session_state.upload_round += 1
             st.rerun()
 
-        if sess and sess.files:
-            st.caption("**This session**")
-            for f in sess.files:
+        if shared and shared.files:
+            st.caption("**Shared with every chat**")
+            for f in shared.files:
                 st.caption(f"· {f['name']} — {f['chunks']} chunks")
-            if st.button("Clear session documents", width="stretch"):
-                sessions.clear(sess.id)
-                rag_tools.drop_store(sess.namespace)
-                st.session_state.sid = sessions.start().id
+            if st.button("Clear shared documents", width="stretch"):
+                sessions.clear(shared.id)
+                rag_tools.drop_store(shared.namespace)
+                st.session_state.shared_sid = sessions.start().id
                 st.rerun()
-            st.caption("Searching your uploads only.")
         else:
             corpus = rag_tools.describe_corpus(DOC_NAMESPACE)
-            st.caption(f"Searching saved documents: {corpus}" if corpus
-                       else "No documents indexed yet.")
+            st.caption(f"Also searching saved documents: {corpus}" if corpus
+                       else "No saved documents indexed.")
     else:
         st.info(f"`{model_name}` can't use tools, so it can't search "
                 f"documents. Chat works normally.", icon="⚠️")
@@ -280,29 +324,19 @@ with st.sidebar:
 
     st.divider()
 
-    col_a, col_b = st.columns(2)
-    with col_a:
-        if st.button("Reset params", width="stretch"):
-            st.session_state.settings = cfg.default_settings()
-            for spec in cfg.PARAM_SPECS:
-                for suffix in ("_sld", "_num", "_sel", "_multi", "_pills"):
-                    st.session_state.pop(f"w_{provider.key}_{spec.key}{suffix}", None)
-            st.rerun()
-    with col_b:
-        if st.button("New chat", width="stretch", type="primary"):
-            reset_thread(st.session_state.thread_id)
-            st.session_state.history = []
-            n = int(st.session_state.thread_id.split("-")[-1]) + 1
-            st.session_state.thread_id = f"chat-{n}"
-            st.rerun()
+    # "New chat" lives at the top of the sidebar with the chat list now.
+    if st.button("Reset params", width="stretch"):
+        st.session_state.settings = cfg.default_settings()
+        for spec in cfg.PARAM_SPECS:
+            for suffix in ("_sld", "_num", "_sel", "_multi", "_pills"):
+                st.session_state.pop(f"w_{provider.key}_{spec.key}{suffix}", None)
+        st.rerun()
 
     with st.expander("Exactly what gets sent"):
         st.json(cfg.translate(provider, settings, model_name))
 
 
 # --- main chat -------------------------------------------------------------
-st.title("💬 Chat Assistant")
-st.caption(f"{provider.label} · {model_name}")
 
 def render_sources(sources):
     """The passages the assistant actually retrieved for one answer."""
@@ -320,7 +354,40 @@ def render_sources(sources):
             st.markdown(f"> {' '.join(src['text'].split())}")
 
 
-for role, text, caption, sources in st.session_state.history:
+cur = chat()
+chat_sess = sessions.get(cur["sid"])
+
+# What this chat can search: documents shared across the app, plus any
+# attached to this chat alone. A chat with its own files still sees the
+# shared ones - attaching a document narrows nothing.
+search_ns = []
+shared_sess = sessions.get(st.session_state.shared_sid)
+if shared_sess and shared_sess.files:
+    search_ns.append(shared_sess.namespace)
+if chat_sess and chat_sess.files:
+    search_ns.append(chat_sess.namespace)
+if not search_ns:
+    search_ns = [DOC_NAMESPACE]        # fall back to the saved corpus
+
+st.title("💬 " + cur["title"])
+bits = [f"{provider.label} · {model_name}"]
+if chat_sess and chat_sess.files:
+    bits.append("📎 " + ", ".join(f["name"] for f in chat_sess.files))
+st.caption(" · ".join(bits))
+
+if chat_sess and chat_sess.files:
+    with st.expander(f"📎 {len(chat_sess.files)} document"
+                     f"{'' if len(chat_sess.files) == 1 else 's'} in this chat"):
+        for f in chat_sess.files:
+            st.caption(f"· {f['name']} — {f['chunks']} chunks, "
+                       f"{f['characters']:,} characters")
+        if st.button("Remove this chat's documents", key="clr_chat"):
+            sessions.clear(chat_sess.id)
+            rag_tools.drop_store(chat_sess.namespace)
+            cur["sid"] = sessions.start().id
+            st.rerun()
+
+for role, text, caption, sources in cur["history"]:
     with st.chat_message(role):
         st.markdown(text)
         if sources:
@@ -328,50 +395,72 @@ for role, text, caption, sources in st.session_state.history:
         if caption:
             st.caption(caption)
 
-if prompt := st.chat_input("Ask me anything"):
-    st.session_state.history.append(("user", prompt, None, None))
-    with st.chat_message("user"):
-        st.markdown(prompt)
+entry = st.chat_input(
+    "Ask me anything — attach a document with the paperclip",
+    accept_file=True,
+    file_type=[e.lstrip(".") for e in core.SUPPORTED],
+)
 
-    with st.chat_message("assistant"):
-        sources = None
-        try:
-            thread = st.session_state.thread_id
-            # Only hand over the tool when the model can use it and the user
-            # wants it; otherwise this is an ordinary chat agent.
-            tools = None
-            if can_search and st.session_state.use_docs:
-                rag_tools.clear_sources(thread)     # so stale hits aren't shown
-                # Uploads take precedence: if you put a document into this
-                # session, that is what you mean by "my documents". Falling
-                # back to the saved corpus would answer from files you did not
-                # just hand over - the failure that is hardest to spot.
-                sess = sessions.get(st.session_state.sid)
-                ns = sess.namespace if (sess and sess.files) else DOC_NAMESPACE
-                tools = [rag_tools.make_search_tool(thread, ns, k=4)]
+if entry:
+    # accept_file makes chat_input return an object with .text and .files
+    prompt = (entry.text or "").strip() if hasattr(entry, "text") else str(entry)
+    attached = list(getattr(entry, "files", []) or [])
 
-            # Rebuilt every message so the current settings apply, while the
-            # shared checkpointer keeps the conversation intact.
-            agent = build_agent(provider, model_name, settings, tools=tools)
-            answer = st.write_stream(
-                stream_reply(agent, prompt, thread)
-            )
+    # Attachments belong to this chat only, and are embedded before the
+    # question is answered so the first reply can already use them.
+    if attached and chat_sess is not None:
+        for up in attached:
+            with st.spinner(f"Reading and embedding {up.name}…"):
+                res = sessions.add_document(chat_sess, up.name, up.getvalue())
+            if res.get("error"):
+                st.error(f"{up.name}: {res['error']}")
+            else:
+                st.success(f"Attached {res['name']} — {res['chunks']} chunks")
+                rag_tools.drop_store(chat_sess.namespace)
+        if chat_sess.namespace not in search_ns:
+            search_ns.append(chat_sess.namespace)
+        if not prompt:
+            st.rerun()      # attachment only, nothing to answer yet
 
-            # Populated by the tool only if the model chose to search.
-            sources = rag_tools.last_sources(thread) or None
-            if sources:
-                render_sources(sources)
+    if prompt:
+        cur["history"].append(("user", prompt, None, None))
+        with st.chat_message("user"):
+            st.markdown(prompt)
 
-            # Built from what was actually sent, not from the widgets, so the
-            # caption can't claim a value the model discarded.
-            applied = cfg.translate(provider, settings, model_name)
-            caption = f"{provider.label} · {model_name}"
-            if applied.get("temperature") is not None:
-                caption += f" · temp {applied['temperature']:g}"
-            st.caption(caption)
-        except Exception as err:
-            answer = cfg.explain_error(err, provider, model_name)
-            caption = None
-            st.error(answer)
+        with st.chat_message("assistant"):
+            sources = None
+            try:
+                thread = cur["thread"]
+                tools = None
+                if can_search and st.session_state.use_docs:
+                    rag_tools.clear_sources(thread)   # don't show stale hits
+                    tools = [rag_tools.make_search_tool(thread, search_ns, k=4)]
 
-    st.session_state.history.append(("assistant", answer, caption, sources))
+                # Rebuilt every message so current settings apply, while the
+                # shared checkpointer keeps this thread's memory intact.
+                agent = build_agent(provider, model_name, settings, tools=tools)
+                answer = st.write_stream(stream_reply(agent, prompt, thread))
+
+                # Populated by the tool only if the model chose to search.
+                sources = rag_tools.last_sources(thread) or None
+                if sources:
+                    render_sources(sources)
+
+                # Built from what was actually sent, not from the widgets, so
+                # the caption can't claim a value the model discarded.
+                applied = cfg.translate(provider, settings, model_name)
+                caption = f"{provider.label} · {model_name}"
+                if applied.get("temperature") is not None:
+                    caption += f" · temp {applied['temperature']:g}"
+                st.caption(caption)
+            except Exception as err:
+                answer = cfg.explain_error(err, provider, model_name)
+                caption = None
+                st.error(answer)
+
+        cur["history"].append(("assistant", answer, caption, sources))
+
+        # Name the chat after its first question, so the list is readable.
+        if cur["title"].startswith("Chat ") and len(cur["history"]) <= 2:
+            cur["title"] = (prompt[:28] + "…") if len(prompt) > 28 else prompt
+            st.rerun()

@@ -217,6 +217,9 @@ class Provider:
     model_caps: dict[str, int] = field(default_factory=dict)
     # Free-tier notes shown in the UI, keyed by model.
     model_notes: dict[str, str] = field(default_factory=dict)
+    # Models that reject tool definitions. Document search is a tool, so these
+    # cannot use it - verified by binding a tool and invoking each model.
+    no_tool_models: set[str] = field(default_factory=set)
 
     @property
     def supported(self) -> set[str]:
@@ -233,6 +236,12 @@ class Provider:
         """True if this specific model discards the parameter."""
         base = model_name.lower().rsplit("/", 1)[-1]
         return base in self.fixed_sampling_models and param_key in self.fixed_sampling_params
+
+    def supports_tools(self, model_name: str) -> bool:
+        """Can this model be given tools (and therefore search documents)?"""
+        return model_name.lower().rsplit("/", 1)[-1] not in {
+            m.lower().rsplit("/", 1)[-1] for m in self.no_tool_models
+        }
 
     def has_key(self) -> bool:
         return bool(os.getenv(self.env_key))
@@ -308,6 +317,10 @@ PROVIDERS: dict[str, Provider] = {
             "qwen/qwen3.6-27b": "Limited to 1000 output tokens/minute; capped "
                                 "at 800 automatically unless you set your own.",
         },
+        # allam returns 400 "tool calling is not supported"; the compound
+        # models 404 when tools are bound - they are Groq's agentic systems
+        # and carry their own built-in tools.
+        no_tool_models={"allam-2-7b", "groq/compound", "groq/compound-mini"},
     ),
     "openai": Provider(
         key="openai",

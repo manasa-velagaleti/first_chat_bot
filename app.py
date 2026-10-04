@@ -7,6 +7,7 @@ from typing import Any
 import streamlit as st
 
 import config as cfg
+import rag_tools
 from chatbot import build_agent, reset_thread, stream_reply
 
 st.set_page_config(page_title="Chat Assistant", page_icon="💬", layout="wide")
@@ -22,13 +23,19 @@ if not providers:
 
 DEFAULT_LABEL = "Model default"
 
+# Which Pinecone namespace the assistant searches. chars700 suits a
+# PDF-heavy corpus; paragraph chunking fragments PDF pages badly.
+DOC_NAMESPACE = "chars700"
+
 # --- session state ---------------------------------------------------------
 if "settings" not in st.session_state:
     st.session_state.settings = cfg.default_settings()
 if "history" not in st.session_state:
-    st.session_state.history = []          # [(role, text, caption)]
+    st.session_state.history = []          # [(role, text, caption, sources)]
 if "thread_id" not in st.session_state:
     st.session_state.thread_id = "chat-1"
+if "use_docs" not in st.session_state:
+    st.session_state.use_docs = True
 
 
 # --- widget builders -------------------------------------------------------
@@ -169,6 +176,26 @@ with st.sidebar:
         st.caption(f"ℹ️ {mnote}")
 
     st.divider()
+    st.subheader("Documents")
+
+    can_search = provider.supports_tools(model_name)
+    if can_search:
+        st.session_state.use_docs = st.toggle(
+            "Search my documents",
+            value=st.session_state.use_docs,
+            help="When on, the assistant searches your indexed documents if a "
+                 "question looks like it relates to them. Ordinary chat is "
+                 "unaffected - it only searches when it judges it useful.",
+        )
+        if st.session_state.use_docs:
+            corpus = rag_tools.describe_corpus(DOC_NAMESPACE)
+            st.caption(f"Searching: {corpus}" if corpus
+                       else "No documents indexed yet.")
+    else:
+        st.info(f"`{model_name}` can't use tools, so it can't search "
+                f"documents. Chat works normally.", icon="⚠️")
+
+    st.divider()
 
     head, icon = st.columns([3, 1], vertical_alignment="center")
     with head:
@@ -231,25 +258,58 @@ with st.sidebar:
 st.title("💬 Chat Assistant")
 st.caption(f"{provider.label} · {model_name}")
 
-for role, text, caption in st.session_state.history:
+def render_sources(sources):
+    """The passages the assistant actually retrieved for one answer."""
+    if not sources:
+        return
+    with st.expander(f"📄 {len(sources)} passage"
+                     f"{'' if len(sources) == 1 else 's'} used"):
+        for src in sources:
+            where = f"page {src['page']}" if src.get("page") is not None else (
+                f"paragraph {src['paragraph']}"
+                if src.get("paragraph") is not None else "")
+            st.caption(f"**[{src['n']}]** {src['file']}"
+                       + (f" · {where}" if where else "")
+                       + f" · score {src['score']}")
+            st.markdown(f"> {' '.join(src['text'].split())}")
+
+
+for role, text, caption, sources in st.session_state.history:
     with st.chat_message(role):
         st.markdown(text)
+        if sources:
+            render_sources(sources)
         if caption:
             st.caption(caption)
 
 if prompt := st.chat_input("Ask me anything"):
-    st.session_state.history.append(("user", prompt, None))
+    st.session_state.history.append(("user", prompt, None, None))
     with st.chat_message("user"):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
+        sources = None
         try:
+            thread = st.session_state.thread_id
+            # Only hand over the tool when the model can use it and the user
+            # wants it; otherwise this is an ordinary chat agent.
+            tools = None
+            if can_search and st.session_state.use_docs:
+                rag_tools.clear_sources(thread)     # so stale hits aren't shown
+                tools = [rag_tools.make_search_tool(thread, DOC_NAMESPACE, k=4)]
+
             # Rebuilt every message so the current settings apply, while the
             # shared checkpointer keeps the conversation intact.
-            agent = build_agent(provider, model_name, settings)
+            agent = build_agent(provider, model_name, settings, tools=tools)
             answer = st.write_stream(
-                stream_reply(agent, prompt, st.session_state.thread_id)
+                stream_reply(agent, prompt, thread)
             )
+
+            # Populated by the tool only if the model chose to search.
+            sources = rag_tools.last_sources(thread) or None
+            if sources:
+                render_sources(sources)
+
             # Built from what was actually sent, not from the widgets, so the
             # caption can't claim a value the model discarded.
             applied = cfg.translate(provider, settings, model_name)
@@ -262,4 +322,4 @@ if prompt := st.chat_input("Ask me anything"):
             caption = None
             st.error(answer)
 
-    st.session_state.history.append(("assistant", answer, caption))
+    st.session_state.history.append(("assistant", answer, caption, sources))

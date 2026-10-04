@@ -149,6 +149,20 @@
     .buildbtn { font-size: 12px; padding: 6px 12px; border-radius: 8px;
                 white-space: nowrap; }
 
+    .modes { display: flex; gap: 0; margin: 16px 0 0; }
+    .modes button {
+      background: var(--card); border: 1px solid var(--line); color: var(--muted);
+      font-size: 13px; font-weight: 500; padding: 6px 14px; border-radius: 0;
+    }
+    .modes button:first-child { border-radius: 8px 0 0 8px; }
+    .modes button:last-child { border-radius: 0 8px 8px 0; border-left: 0; }
+    .modes button.on { background: var(--accent-soft); color: var(--accent);
+                       border-color: var(--accent); font-weight: 700; }
+    .clearbtn { background: transparent; border: 1px solid var(--line);
+                color: var(--muted); font-size: 12px; font-weight: 500;
+                padding: 6px 12px; border-radius: 8px; white-space: nowrap; }
+    .clearbtn:hover { border-color: #c0392b; color: #c0392b; }
+
     .docbar {
       display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
       background: var(--card); border: 1px solid var(--line);
@@ -424,6 +438,9 @@
       const [chunk, setChunk] = useState(null);   // null = paragraph chunking
       const [configs, setConfigs] = useState(null);
       const [dlg, setDlg] = useState(false);
+      const [mode, setMode] = useState("session");   // "session" | "project"
+      const [sid, setSid] = useState(null);
+      const [sessFiles, setSessFiles] = useState([]);
       const [uploading, setUploading] = useState(null);
       const [over, setOver] = useState(false);
       const [upErr, setUpErr] = useState(null);
@@ -463,15 +480,30 @@
         try {
           const fd = new FormData();
           fd.append("file", file);
-          const res = await fetch("/api/upload", { method: "POST", body: fd });
+          // In session mode the upload embeds too, so one request covers it.
+          const url = mode === "session" && sid
+            ? `/api/session/${sid}/upload`
+            : "/api/upload";
+          const res = await fetch(url, { method: "POST", body: fd });
           const data = await res.json();
           if (data.error) setUpErr(data.error);
-          else await reloadConfigs();
+          else if (mode === "session") setSessFiles(data.files || []);
+          else pickUsable(await reloadConfigs());
         } catch (e) {
           setUpErr(String(e));
         }
         setUploading(null);
         if (filePick.current) filePick.current.value = "";
+      }
+
+      async function clearSession() {
+        if (!sid) return;
+        await fetch(`/api/session/${sid}`, { method: "DELETE" }).catch(() => {});
+        const d = await fetch("/api/session", { method: "POST" })
+          .then((r) => r.json());
+        setSid(d.session);
+        setSessFiles([]);
+        setItems([]);
       }
 
       async function removeDoc(name) {
@@ -503,6 +535,10 @@
         fetch("/api/status").then((r) => r.json()).then(setStatus)
           .catch((e) => setStatus({ ready: false, error: String(e) }));
         reloadConfigs().then(pickUsable).catch(() => {});
+        // One scratch corpus per tab. Nothing it holds outlives the session.
+        fetch("/api/session", { method: "POST" })
+          .then((r) => r.json()).then((d) => setSid(d.session))
+          .catch(() => {});
       }, []);
 
       async function submit(question) {
@@ -517,7 +553,11 @@
           const res = await fetch("/api/ask", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ question: text, k, chunk_size: chunk }),
+            body: JSON.stringify({
+              question: text, k,
+              chunk_size: chunk,
+              session: mode === "session" ? sid : null,
+            }),
           });
           const data = await res.json();
           setItems((prev) => prev.map((it) =>
@@ -553,6 +593,17 @@
             </div>
           </header>
 
+          <div className="modes">
+            <button className={mode === "session" ? "on" : ""}
+                    onClick={() => setMode("session")}>
+              This session
+            </button>
+            <button className={mode === "project" ? "on" : ""}
+                    onClick={() => setMode("project")}>
+              Saved documents
+            </button>
+          </div>
+
           <div className={"docbar" + (over ? " over" : "")}
                onDragOver={(e) => { e.preventDefault(); setOver(true); }}
                onDragLeave={() => setOver(false)}
@@ -562,7 +613,24 @@
                }}>
             <span className="files">
               {uploading ? (
-                <>Uploading <b>{uploading}</b>…</>
+                <>Reading and embedding <b>{uploading}</b>…</>
+              ) : mode === "session" ? (
+                sessFiles.length ? (
+                  <>
+                    <b>{sessFiles.length} document
+                      {sessFiles.length === 1 ? "" : "s"} this session</b>
+                    {" · "}
+                    {sessFiles.map((f) => `${f.name} (${f.chunks} chunks)`)
+                      .join(", ")}
+                  </>
+                ) : (
+                  <>Upload a document to ask about it — it is embedded straight
+                    away and kept only for this session{" "}
+                    <span style={{ opacity: .7 }}>
+                      ({(configs?.accepts || []).join(" ")})
+                    </span>
+                  </>
+                )
               ) : configs?.documents?.length ? (
                 <>
                   <b>{configs.documents.length} document
@@ -578,10 +646,15 @@
                 </>
               )}
             </span>
+            {mode === "session" && sessFiles.length > 0 && (
+              <button className="clearbtn" onClick={clearSession}>
+                Clear session
+              </button>
+            )}
             <button className="upbtn"
-                    disabled={uploading !== null}
+                    disabled={uploading !== null || (mode === "session" && !sid)}
                     onClick={() => filePick.current?.click()}>
-              {uploading ? "Uploading…" : "+ Upload document"}
+              {uploading ? "Embedding…" : "+ Upload document"}
             </button>
             <input ref={filePick} type="file" accept={configs?.accepts?.join(",") || ".txt,.md,.pdf,.docx,.csv"}
                    style={{ display: "none" }}
@@ -592,7 +665,7 @@
             <div className="card err" style={{ marginTop: 10 }}>{upErr}</div>
           )}
 
-          {needsBuild && (
+          {mode === "project" && needsBuild && (
             <div className="needbuild">
               <span style={{ flex: 1 }}>
                 The documents changed. Rebuild the
@@ -628,7 +701,7 @@
               <span>Enter to send · Shift+Enter for a new line</span>
             </div>
 
-            {items.length === 0 && (
+            {items.length === 0 && mode === "project" && (
               <div className="examples">
                 {EXAMPLES.map((e) => (
                   <button key={e} onClick={() => submit(e)}>{e}</button>

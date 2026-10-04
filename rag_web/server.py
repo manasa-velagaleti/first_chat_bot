@@ -15,11 +15,14 @@ Endpoints:
 
 from __future__ import annotations
 
+import atexit
 import hashlib
 import json
 import re
 import shutil
 import sys
+import tempfile
+import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -33,6 +36,7 @@ import rag_pinecone as rag                     # noqa: E402
 from fastapi import FastAPI, File, UploadFile  # noqa: E402
 from fastapi.responses import FileResponse     # noqa: E402
 from fastapi.staticfiles import StaticFiles    # noqa: E402
+from langchain_pinecone import PineconeVectorStore  # noqa: E402
 from pydantic import BaseModel, Field          # noqa: E402
 
 STATIC = Path(__file__).resolve().parent / "static"
@@ -73,6 +77,8 @@ class Question(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     k: int = Field(default=4, ge=1, le=20)
     chunk_size: int | None = Field(default=None)
+    # When present, search only what this session uploaded.
+    session: str | None = Field(default=None)
 
 
 class BuildRequest(BaseModel):
@@ -113,6 +119,53 @@ def record_built(namespace: str) -> None:
     m = read_manifest()
     m[namespace] = corpus_fingerprint()
     MANIFEST.write_text(json.dumps(m, indent=2))
+
+
+# --- sessions -------------------------------------------------------------
+# A session is a scratch corpus: files land in an OS temp folder rather than
+# the project, and their vectors go in a Pinecone namespace of their own.
+# Nothing a session creates outlives it - clear_session() removes both.
+
+SESSIONS: dict[str, dict] = {}
+SESSION_CHUNK = 700          # fixed-size suits PDFs, which most uploads are
+
+
+def session_state(sid: str) -> dict:
+    if sid not in SESSIONS:
+        SESSIONS[sid] = {
+            "dir": Path(tempfile.mkdtemp(prefix=f"ragsess_{sid[:8]}_")),
+            "namespace": f"sess-{sid[:12]}",
+            "files": [],            # [{name, kb, chunks}]
+            "chunk_size": SESSION_CHUNK,
+        }
+    return SESSIONS[sid]
+
+
+def clear_session(sid: str) -> None:
+    """Delete the session's vectors and its temp files."""
+    st = SESSIONS.pop(sid, None)
+    if not st:
+        return
+    try:
+        pc = rag.client()
+        if pc.has_index(rag.INDEX_NAME):
+            pc.Index(rag.INDEX_NAME).delete(delete_all=True,
+                                            namespace=st["namespace"])
+    except Exception:
+        pass        # namespace may never have been written to
+    _stores.pop(st["namespace"], None)
+    shutil.rmtree(st["dir"], ignore_errors=True)
+
+
+@atexit.register
+def _cleanup_all_sessions() -> None:
+    """Don't leave temp folders or Pinecone namespaces behind on shutdown."""
+    for sid in list(SESSIONS):
+        clear_session(sid)
+
+
+def session_documents(sid: str) -> list[dict]:
+    return session_state(sid)["files"] if sid in SESSIONS else []
 
 
 def list_documents() -> list[dict]:
@@ -204,6 +257,24 @@ def build(req: BuildRequest) -> dict:
 
 @app.post("/api/ask")
 def ask(q: Question) -> dict:
+    # A session searches only its own uploads, so the staleness check below
+    # does not apply - its namespace is written and read in the same session.
+    if q.session:
+        if q.session not in SESSIONS:
+            return {"error": "That session has ended. Reload the page to "
+                             "start a new one."}
+        st = SESSIONS[q.session]
+        if not st["files"]:
+            return {"error": "No documents in this session yet - upload one "
+                             "to ask about it."}
+        try:
+            result = rag.ask(store(st["namespace"]), q.question,
+                             k=q.k, model=core.CHAT_MODEL)
+            result["chunking"] = f"{st['chunk_size']} characters (session)"
+            return result
+        except Exception as exc:
+            return {"error": f"{type(exc).__name__}: {exc}"}
+
     ns = rag.namespace_for(q.chunk_size)
     label = "paragraph" if q.chunk_size is None else f"{q.chunk_size}-character"
 
@@ -300,6 +371,102 @@ def delete_document(name: str) -> dict:
         return {"error": "No such document."}
     target.unlink()
     return {"ok": True, "documents": list_documents()}
+
+
+# --- session API ----------------------------------------------------------
+
+@app.post("/api/session")
+def new_session() -> dict:
+    """Start a scratch corpus. The id is held by the browser tab."""
+    sid = uuid.uuid4().hex
+    st = session_state(sid)
+    return {"session": sid, "namespace": st["namespace"],
+            "chunk_size": st["chunk_size"]}
+
+
+@app.get("/api/session/{sid}")
+def session_info(sid: str) -> dict:
+    if sid not in SESSIONS:
+        return {"exists": False, "files": [], "vectors": 0}
+    st = SESSIONS[sid]
+    return {
+        "exists": True,
+        "files": st["files"],
+        "chunk_size": st["chunk_size"],
+        "vectors": namespace_counts().get(st["namespace"], 0),
+    }
+
+
+@app.delete("/api/session/{sid}")
+def end_session(sid: str) -> dict:
+    clear_session(sid)
+    return {"ok": True}
+
+
+@app.post("/api/session/{sid}/upload")
+async def session_upload(sid: str, file: UploadFile = File(...)) -> dict:
+    """Save to the session's temp folder and embed it straight away.
+
+    One step rather than upload-then-build: a scratch document is only
+    useful once it is searchable, so there is nothing to decide in between.
+    """
+    st = session_state(sid)
+
+    raw_name = Path(file.filename or "").name
+    suffix = Path(raw_name).suffix.lower()
+    if suffix not in ALLOWED:
+        return {"error": f"{suffix or 'That file type'} is not supported. "
+                         f"Use {', '.join(sorted(ALLOWED))}."}
+
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(raw_name).stem)[:80] or "document"
+    target = st["dir"] / f"{safe}{suffix}"
+    n = 1
+    while target.exists():
+        target = st["dir"] / f"{safe}_{n}{suffix}"
+        n += 1
+
+    size = 0
+    try:
+        with target.open("wb") as out:
+            while chunk := await file.read(1 << 20):
+                size += len(chunk)
+                if size > MAX_UPLOAD:
+                    out.close()
+                    target.unlink(missing_ok=True)
+                    return {"error": f"File is larger than "
+                                     f"{MAX_UPLOAD // (1024*1024)} MB."}
+                out.write(chunk)
+    except Exception as exc:
+        target.unlink(missing_ok=True)
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+    # Read it, chunk it, embed it - all before replying, so a success here
+    # means the document is genuinely ready to be asked about.
+    try:
+        docs = core.load_one(target)
+        chars = sum(len(d.page_content) for d in docs)
+        if chars == 0:
+            detail = (core.describe_pdf(target)
+                      if suffix == ".pdf" else "the file appears to be empty")
+            target.unlink(missing_ok=True)
+            return {"error": f"No text could be read from that file - {detail}."}
+
+        chunks = rag.chunk_for(docs, st["chunk_size"])
+        PineconeVectorStore.from_documents(
+            chunks,
+            embedding=core.embeddings(),
+            index_name=rag.INDEX_NAME,
+            namespace=st["namespace"],
+        )
+        _stores.pop(st["namespace"], None)      # reopen against new vectors
+    except Exception as exc:
+        target.unlink(missing_ok=True)
+        return {"error": f"Could not index that file: {type(exc).__name__}: {exc}"}
+
+    st["files"].append({"name": target.name, "kb": round(size / 1024, 1),
+                        "chunks": len(chunks), "characters": chars})
+    return {"ok": True, "name": target.name, "chunks": len(chunks),
+            "characters": chars, "files": st["files"]}
 
 
 @app.get("/")

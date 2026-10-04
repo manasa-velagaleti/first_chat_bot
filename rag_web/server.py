@@ -205,9 +205,21 @@ def build(req: BuildRequest) -> dict:
 @app.post("/api/ask")
 def ask(q: Question) -> dict:
     ns = rag.namespace_for(q.chunk_size)
+    label = "paragraph" if q.chunk_size is None else f"{q.chunk_size}-character"
+
     if namespace_counts().get(ns, 0) == 0:
-        return {"error": f"Nothing indexed for this chunk setting yet. "
-                         f"Open the chunking dialog and build it first."}
+        return {"error": f"Nothing is indexed for the {label} setting yet. "
+                         f"Open ⚙ Chunks and build it first."}
+
+    # Refuse rather than answer from vectors built out of different documents.
+    # Answering anyway produces a confident reply drawn from the wrong corpus,
+    # which is far harder to spot than an error.
+    if read_manifest().get(ns) != corpus_fingerprint():
+        return {"error": f"The {label} index was built from a different set of "
+                         f"documents, so it would not see your newest upload. "
+                         f"Rebuild it first - the banner above has a button, or "
+                         f"pick an index that is already up to date in "
+                         f"⚙ Chunks."}
     try:
         # The CLI's own function - no retrieval or prompting logic here.
         result = rag.ask(store(ns), q.question, k=q.k, model=core.CHAT_MODEL)

@@ -52,6 +52,13 @@ the PDF library decoding each format. Ordinary PDFs never pay for this: OCR only
 extraction comes back empty, so a text PDF is unaffected and a scan takes a few
 seconds longer.
 
+Each chunk setting is a **separate index**. Uploading a document does not touch
+the ones already built, so the setting you are querying decides which documents
+you can actually reach. The page opens on an index that matches the current
+documents, and asking a stale one is refused rather than answered from the wrong
+corpus - a confident answer drawn from documents you did not mean is much harder
+to notice than an error.
+
 **Changing the documents makes every built index stale**, and the dialog says so:
 affected chunk settings switch from a vector count to a **Rebuild** button. A
 namespace whose origin isn't recorded counts as stale too — one rebuild beats

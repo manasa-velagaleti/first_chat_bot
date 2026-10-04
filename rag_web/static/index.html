@@ -438,7 +438,22 @@
 
       async function reloadConfigs() {
         const r = await fetch("/api/configs");
-        setConfigs(await r.json());
+        const cfg = await r.json();
+        setConfigs(cfg);
+        return cfg;
+      }
+
+      // Land on an index that actually matches the current documents.
+      // Defaulting to "by paragraph" regardless meant the page could answer
+      // from a stale index built before the newest upload - which looks like
+      // the document was never indexed, or worse, quietly answers from the
+      // wrong corpus.
+      function pickUsable(cfg) {
+        const opts = cfg?.options || [];
+        const active = opts.find((o) => o.chunk_size === chunk);
+        if (active && active.built && !active.stale) return;
+        const usable = opts.find((o) => o.built && !o.stale);
+        if (usable) setChunk(usable.chunk_size);
       }
 
       async function upload(file) {
@@ -479,7 +494,7 @@
           });
           const data = await res.json();
           if (data.error) setUpErr(data.error);
-          else await reloadConfigs();
+          else pickUsable(await reloadConfigs());
         } catch (e) { setUpErr(String(e)); }
         setBuilding(null);
       }
@@ -487,7 +502,7 @@
       useEffect(() => {
         fetch("/api/status").then((r) => r.json()).then(setStatus)
           .catch((e) => setStatus({ ready: false, error: String(e) }));
-        reloadConfigs().catch(() => {});
+        reloadConfigs().then(pickUsable).catch(() => {});
       }, []);
 
       async function submit(question) {

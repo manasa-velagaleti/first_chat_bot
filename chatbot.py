@@ -39,6 +39,12 @@ def get_checkpointer() -> MemorySaver:
 def build_model(provider: Provider, model_name: str, settings: dict[str, Any]):
     """Instantiate the chat model with only the params this provider accepts."""
     kwargs = translate(provider, settings, model_name)
+    # Two retries, not the default six. A model that is out of free-tier quota
+    # returns 429 on every attempt, and the default backoff turns that into a
+    # minute-long silence that reads as a hang - especially with tools bound,
+    # where there is no streamed text to show progress. Failing fast lets the
+    # UI say "quota exhausted, switch model" while that is still useful.
+    kwargs.setdefault("max_retries", 2)
     return init_chat_model(f"{provider.prefix}:{model_name}", **kwargs)
 
 

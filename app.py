@@ -276,7 +276,11 @@ with st.sidebar:
             if res.get("error"):
                 st.error(res["error"])
             else:
-                st.success(f"{res['name']} — {res['chunks']} chunks")
+                st.success(
+                    f"**{res['name']}** — {res['characters']:,} characters "
+                    f"→ **{res['chunks']} chunks** → embedded with "
+                    f"{core.EMBED_MODEL}"
+                )
                 rag_tools.drop_store(shared.namespace)  # reopen on new vectors
             # Reset the widget so the same file can be re-added after a clear,
             # and so this block does not re-run on the next interaction.
@@ -340,6 +344,37 @@ with st.sidebar:
     st.divider()
 
     # "New chat" lives at the top of the sidebar with the chat list now.
+    with st.expander("ℹ️ Which models can search documents?"):
+        st.caption("Document search needs tool calling. Most models support "
+                   "it; these do not, and run as plain chat instead.")
+        rows = []
+        for prov in cfg.PROVIDERS.values():
+            for mdl in prov.models:
+                rows.append({
+                    "Provider": prov.label,
+                    "Model": mdl,
+                    "Can search": "Yes" if prov.supports_tools(mdl) else "No",
+                })
+        st.dataframe(rows, hide_index=True, width="stretch")
+        st.caption("A model can also be temporarily unavailable through free-"
+                   "tier quota - that shows as a rate-limit error, not as a "
+                   "missing feature. Switching model fixes it.")
+
+    with st.expander("📊 What is stored"):
+        if st.button("Check index", key="idx_stats"):
+            st.session_state.idx = rag_tools.index_stats(search_ns)
+        info = st.session_state.get("idx") if "idx" in st.session_state else None
+        if info:
+            st.caption(f"**Embedding model**  {info['embed_model']}")
+            st.caption(f"**Dimensions**  {info['dimensions']} per chunk")
+            st.caption(f"**Distance metric**  {info['metric']}")
+            st.caption(f"**Vectors stored**  {info['vectors']:,}")
+            for ns, n in info["per_namespace"].items():
+                label = ("this chat" if chat_sess and ns == chat_sess.namespace
+                         else "shared" if shared_sess and ns == shared_sess.namespace
+                         else "saved documents")
+                st.caption(f"· {label}: {n:,}")
+
     st.divider()
     with st.expander("🔍 Browse chunks"):
         st.caption("Every chunk the assistant can search — not just the ones "
@@ -439,7 +474,11 @@ if entry:
             if res.get("error"):
                 st.error(f"{up.name}: {res['error']}")
             else:
-                st.success(f"Attached {res['name']} — {res['chunks']} chunks")
+                st.success(
+                    f"Attached **{res['name']}** — {res['characters']:,} "
+                    f"characters → **{res['chunks']} chunks** → embedded "
+                    f"with `{core.EMBED_MODEL}`"
+                )
                 rag_tools.drop_store(chat_sess.namespace)
         if chat_sess.namespace not in search_ns:
             search_ns.append(chat_sess.namespace)

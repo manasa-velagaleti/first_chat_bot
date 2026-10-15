@@ -209,3 +209,42 @@ def all_chunks(namespaces, limit: int = 2000) -> list[dict]:
     out.sort(key=lambda c: (c["file"], c["page"] if c["page"] is not None else 0,
                             c["chunk"] if c["chunk"] is not None else 0))
     return out
+
+
+def index_stats(namespaces) -> dict:
+    """What is actually stored, for showing after an upload.
+
+    "How many chunks did it make" and "how many got stored" are different
+    questions and can disagree - an upsert is eventually consistent, so the
+    count lags for a few seconds, and a failed batch would show up here as a
+    permanent shortfall. Reporting both is the point.
+    """
+    if isinstance(namespaces, str):
+        namespaces = [namespaces]
+    namespaces = [n for n in namespaces if n]
+
+    out = {
+        "embed_model": core.EMBED_MODEL,
+        "dimensions": None,
+        "metric": None,
+        "vectors": 0,
+        "per_namespace": {},
+        "index": rag.INDEX_NAME,
+    }
+    try:
+        pc = rag.client()
+        if not pc.has_index(rag.INDEX_NAME):
+            return out
+        desc = pc.describe_index(rag.INDEX_NAME)
+        out["dimensions"] = desc.dimension
+        out["metric"] = desc.metric
+        stats = pc.Index(rag.INDEX_NAME).describe_index_stats()
+        counts = {ns: info.get("vector_count", 0)
+                  for ns, info in (stats.get("namespaces") or {}).items()}
+        for ns in namespaces:
+            n = counts.get(ns, 0)
+            out["per_namespace"][ns] = n
+            out["vectors"] += n
+    except Exception:
+        pass
+    return out

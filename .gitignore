@@ -19,3 +19,9 @@ embeddings_app/faiss_index/
 # Which corpus each Pinecone namespace was built from
 rag_web/.built.json
 rag_eval_results.txt
+
+# Deck build artefacts
+deck/node_modules/
+deck/*.pdf
+deck/slide-*.jpg
+deck/package*.json

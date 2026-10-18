@@ -14,8 +14,9 @@ tool lie about the system it is meant to explain.
 
 from __future__ import annotations
 
-import warnings
 import logging
+import os
+import warnings
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -42,6 +43,34 @@ INDEX_DIR = APP_DIR / "faiss_index"
 OUT_DIR = APP_DIR / "out"
 
 load_dotenv(ROOT / ".env")
+
+# --- IPv4 only --------------------------------------------------------------
+# Some home routers answer AAAA (IPv6) lookups for arbitrary hostnames with
+# their own address, so a connection that prefers IPv6 reaches the router
+# instead of the real host and is met with the router's self-signed admin
+# certificate. That surfaces as:
+#
+#   SSLCertVerificationError: certificate verify failed: self-signed certificate
+#   subject: CN=dsldevice..., O=Arris Group, Inc.
+#
+# which looks like a broken API key or an expired certificate and is neither.
+# Measured on this machine: api.pinecone.io over IPv4 served a valid Google
+# Trust Services certificate, while IPv6 reached the router.
+#
+# Restricting name resolution to IPv4 sidesteps it. There is no loss on a
+# network where IPv6 works, since every one of these services is reachable
+# over IPv4. Set RAG_ALLOW_IPV6=1 to turn this off.
+if not os.getenv("RAG_ALLOW_IPV6"):
+    import socket as _socket
+
+    _real_getaddrinfo = _socket.getaddrinfo
+
+    def _ipv4_getaddrinfo(host, port, family=0, *args, **kwargs):
+        if family == 0:
+            family = _socket.AF_INET
+        return _real_getaddrinfo(host, port, family, *args, **kwargs)
+
+    _socket.getaddrinfo = _ipv4_getaddrinfo
 
 # --- models ---------------------------------------------------------------
 EMBED_MODEL = "text-embedding-3-small"          # 1536 dimensions

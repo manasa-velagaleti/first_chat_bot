@@ -15,6 +15,7 @@ import sessions                      # noqa: E402  shared with rag_web
 import config as cfg
 import evaluation as ev
 import rag_tools
+import voice
 from chatbot import build_agent, stream_reply
 
 st.set_page_config(page_title="Chat Assistant", page_icon="💬", layout="wide")
@@ -71,6 +72,10 @@ if not st.session_state.chats:
     new_chat()
 if "use_docs" not in st.session_state:
     st.session_state.use_docs = True
+if "spoken" not in st.session_state:
+    st.session_state.spoken = {}        # (chat, turn) -> mp3 bytes
+if "voice_round" not in st.session_state:
+    st.session_state.voice_round = 0
 if "verdicts" not in st.session_state:
     st.session_state.verdicts = {}      # (chat, turn) -> Verdict
 if "upload_round" not in st.session_state:
@@ -348,6 +353,30 @@ with st.sidebar:
 
     # "New chat" lives at the top of the sidebar with the chat list now.
     st.divider()
+    st.subheader("Voice")
+    if voice.available():
+        st.session_state.tts_voice = st.selectbox(
+            "Voice for reading answers", voice.VOICES,
+            help="Used by the Read aloud button under each answer.",
+        )
+        st.caption("Ask by voice — record, and it becomes your next question.")
+        clip = st.audio_input("Record a question",
+                              key=f"mic_{st.session_state.voice_round}")
+        if clip is not None:
+            with st.spinner("Transcribing…"):
+                res = voice.transcribe(clip.getvalue(), "speech.wav")
+            if res.get("error"):
+                st.error(res["error"])
+            else:
+                # Hand it to the chat loop below as if it had been typed.
+                st.session_state.voice_prompt = res["text"]
+                st.session_state.voice_round += 1
+                st.rerun()
+    else:
+        st.caption("Voice needs OPENAI_API_KEY, even when another provider "
+                   "is answering.")
+
+    st.divider()
     st.subheader("Answer evaluation")
     st.caption("A second model checks whether an answer is actually supported "
                "by the passages it cited. Every model can judge — it needs "
@@ -436,6 +465,32 @@ with st.sidebar:
 
 # --- main chat -------------------------------------------------------------
 
+def render_speak(key: str, answer: str):
+    """Read one answer aloud, on request rather than automatically.
+
+    On request because synthesis costs a few seconds and a few cents, and an
+    answer that is being skimmed does not need saying out loud.
+    """
+    if not voice.available():
+        return
+
+    audio = st.session_state.spoken.get(key)
+    if st.button("🔊 Read aloud", key=f"sp_{key}",
+                 help="Speak this answer using OpenAI text-to-speech."):
+        with st.spinner("Generating speech…"):
+            res = voice.speak(answer, st.session_state.get("tts_voice", "alloy"))
+        if res.get("error"):
+            st.error(res["error"])
+        else:
+            st.session_state.spoken[key] = res["audio"]
+            if res.get("truncated"):
+                st.caption("Long answer — reading the opening only.")
+            st.rerun()
+
+    if audio:
+        st.audio(audio, format="audio/mp3", autoplay=True)
+
+
 def render_evaluation(key: str, question: str, sources: list, answer: str,
                       searched: bool = True):
     """A judge button under one answer, and its verdict once it has run.
@@ -522,6 +577,7 @@ for turn, (role, text, caption, sources) in enumerate(cur["history"]):
         if role == "assistant":
             # The question is the user turn immediately before this answer.
             asked = cur["history"][turn - 1][1] if turn else ""
+            render_speak(f"{st.session_state.current}-{turn}", text)
             render_evaluation(f"{st.session_state.current}-{turn}",
                               asked, sources, text)
         if caption:
@@ -533,10 +589,18 @@ entry = st.chat_input(
     file_type=[e.lstrip(".") for e in core.SUPPORTED],
 )
 
-if entry:
-    # accept_file makes chat_input return an object with .text and .files
-    prompt = (entry.text or "").strip() if hasattr(entry, "text") else str(entry)
-    attached = list(getattr(entry, "files", []) or [])
+# A transcribed recording enters here as though it had been typed, so voice
+# and keyboard take exactly the same path through the rest of the app.
+spoken_prompt = st.session_state.pop("voice_prompt", None)
+
+if entry or spoken_prompt:
+    if spoken_prompt:
+        prompt, attached = spoken_prompt, []
+        st.caption(f"🎤 Heard: {spoken_prompt}")
+    else:
+        # accept_file makes chat_input return an object with .text and .files
+        prompt = (entry.text or "").strip() if hasattr(entry, "text") else str(entry)
+        attached = list(getattr(entry, "files", []) or [])
 
     # Attachments belong to this chat only, and are embedded before the
     # question is answered so the first reply can already use them.
@@ -581,9 +645,9 @@ if entry:
                 sources = rag_tools.last_sources(thread) or None
                 if sources:
                     render_sources(sources)
-                render_evaluation(
-                    f"{st.session_state.current}-{len(cur['history'])}",
-                    prompt, sources, answer)
+                turn_key = f"{st.session_state.current}-{len(cur['history'])}"
+                render_speak(turn_key, answer)
+                render_evaluation(turn_key, prompt, sources, answer)
 
                 # Built from what was actually sent, not from the widgets, so
                 # the caption can't claim a value the model discarded.

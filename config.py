@@ -271,8 +271,12 @@ PROVIDERS: dict[str, Provider] = {
             "gemini-3.1-pro-preview": "Pro models have a very small free-tier "
                                       "quota and run out quickly.",
         },
-        # ChatGoogleGenerativeAI declares every one of our parameters directly.
-        native=set(ALL_PARAMS),
+        # ChatGoogleGenerativeAI declares every one of our parameters as a
+        # field, but declaring is not supporting: the Gemini API rejects both
+        # penalties with 400 "Penalty is not enabled for this model". Verified
+        # against gemini-3.5-flash and gemini-3.7-flash. Sending them would
+        # fail the whole request, so they are excluded and the sliders hide.
+        native=set(ALL_PARAMS) - {"frequency_penalty", "presence_penalty"},
         renames={},
         notes="The only provider offering top_k. Uses max_output_tokens natively.",
         # These two run at fixed sampling settings and silently discard

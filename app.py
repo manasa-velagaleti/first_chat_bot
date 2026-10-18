@@ -359,19 +359,13 @@ with st.sidebar:
             "Voice for reading answers", voice.VOICES,
             help="Used by the Read aloud button under each answer.",
         )
-        st.caption("Ask by voice — record, and it becomes your next question.")
-        clip = st.audio_input("Record a question",
-                              key=f"mic_{st.session_state.voice_round}")
-        if clip is not None:
-            with st.spinner("Transcribing…"):
-                res = voice.transcribe(clip.getvalue(), "speech.wav")
-            if res.get("error"):
-                st.error(res["error"])
-            else:
-                # Hand it to the chat loop below as if it had been typed.
-                st.session_state.voice_prompt = res["text"]
-                st.session_state.voice_round += 1
-                st.rerun()
+        st.session_state.auto_speak = st.toggle(
+            "Speak answers automatically",
+            value=st.session_state.get("auto_speak", True),
+            help="Read each new answer aloud as it arrives. Turn off to use "
+                 "the Read aloud button only.",
+        )
+        st.caption("The microphone is next to the chat box.")
     else:
         st.caption("Voice needs OPENAI_API_KEY, even when another provider "
                    "is answering.")
@@ -475,6 +469,11 @@ def render_speak(key: str, answer: str):
         return
 
     audio = st.session_state.spoken.get(key)
+    if audio is not None:
+        # Already spoken - offer a replay rather than synthesising again.
+        st.audio(audio, format="audio/mp3")
+        return
+
     if st.button("🔊 Read aloud", key=f"sp_{key}",
                  help="Speak this answer using OpenAI text-to-speech."):
         with st.spinner("Generating speech…"):
@@ -486,9 +485,6 @@ def render_speak(key: str, answer: str):
             if res.get("truncated"):
                 st.caption("Long answer — reading the opening only.")
             st.rerun()
-
-    if audio:
-        st.audio(audio, format="audio/mp3", autoplay=True)
 
 
 def render_evaluation(key: str, question: str, sources: list, answer: str,
@@ -583,6 +579,28 @@ for turn, (role, text, caption, sources) in enumerate(cur["history"]):
         if caption:
             st.caption(caption)
 
+# The microphone sits beside the chat box rather than in the sidebar: it is
+# an input, and inputs belong where you are typing.
+if voice.available():
+    mic_col, _ = st.columns([1, 2])
+    with mic_col:
+        with st.popover("🎤 Speak", width="stretch"):
+            st.caption("Record your question, then stop. It is transcribed "
+                       "and asked for you.")
+            clip = st.audio_input("Question",
+                                  key=f"mic_{st.session_state.voice_round}",
+                                  label_visibility="collapsed")
+            if clip is not None:
+                with st.spinner("Transcribing…"):
+                    res = voice.transcribe(clip.getvalue(), "speech.wav")
+                if res.get("error"):
+                    st.error(res["error"])
+                else:
+                    # Hand it on exactly as a typed question would arrive.
+                    st.session_state.voice_prompt = res["text"]
+                    st.session_state.voice_round += 1
+                    st.rerun()
+
 entry = st.chat_input(
     "Ask me anything — attach a document with the paperclip",
     accept_file=True,
@@ -646,6 +664,23 @@ if entry or spoken_prompt:
                 if sources:
                     render_sources(sources)
                 turn_key = f"{st.session_state.current}-{len(cur['history'])}"
+
+                # Speak it straight away when asked to. Done here rather than
+                # on the next rerun so the audio arrives with the answer
+                # instead of a beat later.
+                if (voice.available()
+                        and st.session_state.get("auto_speak", True)
+                        and turn_key not in st.session_state.spoken):
+                    with st.spinner("Speaking…"):
+                        said = voice.speak(
+                            answer, st.session_state.get("tts_voice", "alloy"))
+                    if said.get("audio"):
+                        st.session_state.spoken[turn_key] = said["audio"]
+                        st.audio(said["audio"], format="audio/mp3",
+                                 autoplay=True)
+                        if said.get("truncated"):
+                            st.caption("Long answer — reading the opening only.")
+
                 render_speak(turn_key, answer)
                 render_evaluation(turn_key, prompt, sources, answer)
 

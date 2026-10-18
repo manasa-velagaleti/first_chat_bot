@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "embeddings_app"))
 import core                          # noqa: E402  SUPPORTED types
 import sessions                      # noqa: E402  shared with rag_web
 import config as cfg
+import evaluation as ev
 import rag_tools
 from chatbot import build_agent, stream_reply
 
@@ -70,6 +71,8 @@ if not st.session_state.chats:
     new_chat()
 if "use_docs" not in st.session_state:
     st.session_state.use_docs = True
+if "verdicts" not in st.session_state:
+    st.session_state.verdicts = {}      # (chat, turn) -> Verdict
 if "upload_round" not in st.session_state:
     st.session_state.upload_round = 0
 if "shared_sid" not in st.session_state:
@@ -344,6 +347,27 @@ with st.sidebar:
     st.divider()
 
     # "New chat" lives at the top of the sidebar with the chat list now.
+    st.divider()
+    st.subheader("Answer evaluation")
+    st.caption("A second model checks whether an answer is actually supported "
+               "by the passages it cited. Every model can judge — it needs "
+               "no tools — including the three that cannot search.")
+
+    judge_provider = st.selectbox(
+        "Judge provider", providers, format_func=lambda p: p.label,
+        index=next((i for i, p in enumerate(providers)
+                    if p.key != provider.key), 0),
+        help="Best kept different from the chat model. Two models from the "
+             "same family share training, so they tend to share mistakes - "
+             "and a model marking its own work mostly agrees with itself.",
+    )
+    judge_model = st.selectbox("Judge model", judge_provider.models,
+                               key="judge_model")
+    st.session_state.judge = (judge_provider, judge_model)
+    if judge_provider.key == provider.key:
+        st.caption("⚠️ Judging with the same provider that answered.")
+
+    st.divider()
     with st.expander("ℹ️ Which models can search documents?"):
         st.caption("Document search needs tool calling. Most models support "
                    "it; these do not, and run as plain chat instead.")
@@ -412,6 +436,49 @@ with st.sidebar:
 
 # --- main chat -------------------------------------------------------------
 
+def render_evaluation(key: str, question: str, sources: list, answer: str):
+    """A judge button under one answer, and its verdict once it has run.
+
+    Only offered where there is evidence to judge against: an answer from the
+    model's own knowledge has no reference text, and marking it "incorrect"
+    for that reason would be meaningless.
+    """
+    if not sources:
+        return
+
+    verdict = st.session_state.verdicts.get(key)
+    left, right = st.columns([1, 4])
+
+    with left:
+        if st.button("⚖️ Evaluate", key=f"ev_{key}",
+                     help="Ask a second model whether this answer is supported "
+                          "by the passages it cited."):
+            jp, jm = st.session_state.judge
+            with st.spinner(f"{jm} is checking the answer…"):
+                st.session_state.verdicts[key] = ev.judge_answer(
+                    question, sources, answer, jp, jm)
+            st.rerun()
+
+    if verdict:
+        with right:
+            icon = {"correct": "✅", "incorrect": "❌"}.get(
+                verdict.verdict, "❓")
+            with st.popover(f"{icon} {verdict.verdict}"):
+                st.markdown(f"**{icon} {verdict.verdict}**")
+                st.caption(f"Judged by {verdict.judge}")
+                if verdict.error:
+                    st.warning(verdict.error)
+                else:
+                    st.caption(f"The judge replied: `{verdict.raw}`")
+                st.markdown("---")
+                st.caption(
+                    "A second model was shown the question, the passages "
+                    "cited above, and the answer - then asked whether the "
+                    "answer is supported. \"incorrect\" also covers answers "
+                    "that are only partially right."
+                )
+
+
 def render_sources(sources):
     """The passages the assistant actually retrieved for one answer."""
     if not sources:
@@ -446,11 +513,15 @@ if chat_sess and chat_sess.files:
             cur["sid"] = sessions.start().id
             st.rerun()
 
-for role, text, caption, sources in cur["history"]:
+for turn, (role, text, caption, sources) in enumerate(cur["history"]):
     with st.chat_message(role):
         st.markdown(text)
         if sources:
             render_sources(sources)
+            # The question is the user turn immediately before this answer.
+            asked = cur["history"][turn - 1][1] if turn else ""
+            render_evaluation(f"{st.session_state.current}-{turn}",
+                              asked, sources, text)
         if caption:
             st.caption(caption)
 
@@ -508,6 +579,9 @@ if entry:
                 sources = rag_tools.last_sources(thread) or None
                 if sources:
                     render_sources(sources)
+                    render_evaluation(
+                        f"{st.session_state.current}-{len(cur['history'])}",
+                        prompt, sources, answer)
 
                 # Built from what was actually sent, not from the widgets, so
                 # the caption can't claim a value the model discarded.

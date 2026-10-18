@@ -36,6 +36,9 @@ fastapi
 uvicorn
 python-multipart
 
+# Voice input: browser speech recognition
+streamlit-mic-recorder
+
 # Web chatbox UI
 streamlit>=1.40
 

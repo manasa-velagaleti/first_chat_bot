@@ -16,6 +16,7 @@ import config as cfg
 import evaluation as ev
 import rag_tools
 import voice
+from streamlit_mic_recorder import speech_to_text
 from chatbot import build_agent, stream_reply
 
 st.set_page_config(page_title="Chat Assistant", page_icon="💬", layout="wide")
@@ -602,41 +603,30 @@ if pending:
             st.session_state.voice_round += 1
             st.rerun()
 
-# The microphone sits beside the chat box. The recorder itself renders inline
-# rather than inside a popover: a popover closes on every rerun, and the
-# recorder triggers a rerun the moment you stop - so the controls vanished
-# mid-interaction and the result was easy to lose.
-if voice.available() and st.session_state.get("show_mic"):
-    with st.container(border=True):
-        st.caption("🎤 Record your question, then press stop. "
-                   "Allow microphone access if your browser asks.")
-        clip = st.audio_input("Question",
-                              key=f"mic_{st.session_state.voice_round}",
-                              label_visibility="collapsed")
-        row_a, row_b = st.columns([1, 5])
-        with row_a:
-            if st.button("Cancel", width="stretch"):
-                st.session_state.show_mic = False
-                st.session_state.voice_round += 1
-                st.rerun()
-        if clip is not None:
-            data = clip.getvalue()
-            if not data:
-                st.warning("The recording was empty. Check that your browser "
-                           "has microphone permission for this page.")
-            else:
-                with st.spinner(f"Transcribing {len(data)/1024:.0f} KB…"):
-                    res = voice.transcribe(data, "speech.wav")
-                if res.get("error"):
-                    st.error(res["error"])
-                else:
-                    st.session_state.pending_voice = res["text"]
-                    st.session_state.show_mic = False
-                    st.session_state.voice_round += 1
-                    st.rerun()
 
-if voice.available():
-    box_col, mic_col = st.columns([12, 1], vertical_alignment="bottom")
+# A small round mic button sitting level with the chat box's send arrow.
+# The component renders a plain button, so the icon is drawn with a Material
+# glyph and the label text is hidden - a record dot reads as a toggle, not as
+# a microphone.
+st.markdown("""
+<link rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded"/>
+<style>
+  div[data-testid="stCustomComponentV1"] iframe { height: 46px !important; }
+  div[data-testid="stCustomComponentV1"] { margin-bottom: 4px; }
+</style>
+""", unsafe_allow_html=True)
+
+# Microphone, immediately right of the chat box.
+#
+# This uses the browser's own speech recognition rather than recording audio
+# and sending it away to be transcribed. st.audio_input produced empty
+# recordings here, and the round trip it needs - capture, upload, Whisper,
+# back - has several places to fail silently. The browser returns text
+# directly and needs no API key.
+if voice.available() or True:
+    box_col, mic_col = st.columns([14, 1], vertical_alignment="bottom",
+                                  gap="small")
     with box_col:
         entry = st.chat_input(
             "Ask me anything — attach a document with the paperclip",
@@ -644,16 +634,17 @@ if voice.available():
             file_type=[e.lstrip(".") for e in core.SUPPORTED],
         )
     with mic_col:
-        if st.button("🎤", width="stretch",
-                     help="Record a question and have it transcribed"):
-            st.session_state.show_mic = not st.session_state.get("show_mic")
+        heard = speech_to_text(
+            start_prompt="●",          # record
+            stop_prompt="■",           # stop
+            just_once=True,
+            use_container_width=True,
+            language="en",
+            key="stt",
+        )
+        if heard:
+            st.session_state.pending_voice = heard
             st.rerun()
-else:
-    entry = st.chat_input(
-        "Ask me anything — attach a document with the paperclip",
-        accept_file=True,
-        file_type=[e.lstrip(".") for e in core.SUPPORTED],
-    )
 
 # A transcribed recording enters here as though it had been typed, so voice
 # and keyboard take exactly the same path through the rest of the app.

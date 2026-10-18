@@ -436,47 +436,48 @@ with st.sidebar:
 
 # --- main chat -------------------------------------------------------------
 
-def render_evaluation(key: str, question: str, sources: list, answer: str):
+def render_evaluation(key: str, question: str, sources: list, answer: str,
+                      searched: bool = True):
     """A judge button under one answer, and its verdict once it has run.
 
-    Only offered where there is evidence to judge against: an answer from the
-    model's own knowledge has no reference text, and marking it "incorrect"
-    for that reason would be meaningless.
+    When there is nothing to judge, say so. An answer with no cited passages
+    has no reference text, and silently omitting the button leaves the user
+    looking for a control that was never going to appear.
     """
     if not sources:
+        if searched:
+            st.caption("⚖️ Evaluation needs cited passages — this answer "
+                       "did not come from the documents.")
         return
 
     verdict = st.session_state.verdicts.get(key)
-    left, right = st.columns([1, 4])
 
-    with left:
-        if st.button("⚖️ Evaluate", key=f"ev_{key}",
-                     help="Ask a second model whether this answer is supported "
-                          "by the passages it cited."):
-            jp, jm = st.session_state.judge
-            with st.spinner(f"{jm} is checking the answer…"):
-                st.session_state.verdicts[key] = ev.judge_answer(
-                    question, sources, answer, jp, jm)
-            st.rerun()
+    if st.button("⚖️ Evaluate this answer", key=f"ev_{key}",
+                 help="Ask a second model whether this answer is supported "
+                      "by the passages it cited."):
+        jp, jm = st.session_state.judge
+        with st.spinner(f"{jm} is checking the answer…"):
+            st.session_state.verdicts[key] = ev.judge_answer(
+                question, sources, answer, jp, jm)
+        st.rerun()
 
     if verdict:
-        with right:
-            icon = {"correct": "✅", "incorrect": "❌"}.get(
-                verdict.verdict, "❓")
-            with st.popover(f"{icon} {verdict.verdict}"):
-                st.markdown(f"**{icon} {verdict.verdict}**")
-                st.caption(f"Judged by {verdict.judge}")
-                if verdict.error:
-                    st.warning(verdict.error)
-                else:
-                    st.caption(f"The judge replied: `{verdict.raw}`")
-                st.markdown("---")
-                st.caption(
-                    "A second model was shown the question, the passages "
-                    "cited above, and the answer - then asked whether the "
-                    "answer is supported. \"incorrect\" also covers answers "
-                    "that are only partially right."
-                )
+        icon = {"correct": "✅", "incorrect": "❌"}.get(
+            verdict.verdict, "❓")
+        with st.popover(f"{icon} Verdict: {verdict.verdict}"):
+            st.markdown(f"### {icon} {verdict.verdict}")
+            st.caption(f"Judged by {verdict.judge}")
+            if verdict.error:
+                st.warning(verdict.error)
+            else:
+                st.caption(f"The judge replied: `{verdict.raw}`")
+            st.markdown("---")
+            st.caption(
+                "A second model was shown the question, the passages cited "
+                "above, and the answer — then asked whether the answer is "
+                "supported. \"incorrect\" also covers answers that are only "
+                "partially right."
+            )
 
 
 def render_sources(sources):
@@ -518,6 +519,7 @@ for turn, (role, text, caption, sources) in enumerate(cur["history"]):
         st.markdown(text)
         if sources:
             render_sources(sources)
+        if role == "assistant":
             # The question is the user turn immediately before this answer.
             asked = cur["history"][turn - 1][1] if turn else ""
             render_evaluation(f"{st.session_state.current}-{turn}",
@@ -579,9 +581,9 @@ if entry:
                 sources = rag_tools.last_sources(thread) or None
                 if sources:
                     render_sources(sources)
-                    render_evaluation(
-                        f"{st.session_state.current}-{len(cur['history'])}",
-                        prompt, sources, answer)
+                render_evaluation(
+                    f"{st.session_state.current}-{len(cur['history'])}",
+                    prompt, sources, answer)
 
                 # Built from what was actually sent, not from the widgets, so
                 # the caption can't claim a value the model discarded.

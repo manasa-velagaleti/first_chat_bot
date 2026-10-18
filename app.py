@@ -461,31 +461,28 @@ with st.sidebar:
 # --- main chat -------------------------------------------------------------
 
 def render_speak(key: str, answer: str):
-    """Read one answer aloud, on request rather than automatically.
+    """A small speaker beside the answer: click to hear it again.
 
-    On request because synthesis costs a few seconds and a few cents, and an
-    answer that is being skimmed does not need saying out loud.
+    The player itself is hidden by CSS - an answer that speaks should not
+    also grow a playback strip. Clicking re-renders the audio with autoplay,
+    which replays it without synthesising again, since it is cached.
     """
     if not voice.available():
         return
 
-    audio = st.session_state.spoken.get(key)
-    if audio is not None:
-        # Already spoken - offer a replay rather than synthesising again.
-        st.audio(audio, format="audio/mp3")
-        return
-
-    if st.button("🔊 Read aloud", key=f"sp_{key}",
-                 help="Speak this answer using OpenAI text-to-speech."):
-        with st.spinner("Generating speech…"):
-            res = voice.speak(answer, st.session_state.get("tts_voice", "alloy"))
-        if res.get("error"):
-            st.error(res["error"])
-        else:
-            st.session_state.spoken[key] = res["audio"]
-            if res.get("truncated"):
-                st.caption("Long answer — reading the opening only.")
-            st.rerun()
+    if st.button("", icon=":material/volume_up:", key=f"sp_{key}",
+                 help="Read this answer aloud"):
+        audio = st.session_state.spoken.get(key)
+        if audio is None:
+            with st.spinner("Speaking…"):
+                res = voice.speak(answer,
+                                  st.session_state.get("tts_voice", "alloy"))
+            if res.get("error"):
+                st.error(res["error"])
+                return
+            audio = res["audio"]
+            st.session_state.spoken[key] = audio
+        st.audio(audio, format="audio/mp3", autoplay=True)
 
 
 def render_evaluation(key: str, question: str, sources: list, answer: str,
@@ -609,11 +606,13 @@ if pending:
 # glyph and the label text is hidden - a record dot reads as a toggle, not as
 # a microphone.
 st.markdown("""
-<link rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded"/>
 <style>
-  div[data-testid="stCustomComponentV1"] iframe { height: 46px !important; }
+  /* The mic component is a button, not a panel - keep it button-sized. */
+  div[data-testid="stCustomComponentV1"] iframe { height: 44px !important; }
   div[data-testid="stCustomComponentV1"] { margin-bottom: 4px; }
+  /* Answers are spoken, not accompanied by a player. The audio element still
+     plays; it just does not take up a strip under every reply. */
+  div[data-testid="stAudio"] { display: none !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -635,8 +634,8 @@ if voice.available() or True:
         )
     with mic_col:
         heard = speech_to_text(
-            start_prompt="●",          # record
-            stop_prompt="■",           # stop
+            start_prompt="🎤",       # microphone
+            stop_prompt="⏹",           # stop
             just_once=True,
             use_container_width=True,
             language="en",

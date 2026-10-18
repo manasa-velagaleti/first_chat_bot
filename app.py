@@ -602,8 +602,39 @@ if pending:
             st.session_state.voice_round += 1
             st.rerun()
 
-# The microphone sits beside the chat box, not above it - it is another way
-# of filling the same box, so it belongs next to the send button.
+# The microphone sits beside the chat box. The recorder itself renders inline
+# rather than inside a popover: a popover closes on every rerun, and the
+# recorder triggers a rerun the moment you stop - so the controls vanished
+# mid-interaction and the result was easy to lose.
+if voice.available() and st.session_state.get("show_mic"):
+    with st.container(border=True):
+        st.caption("🎤 Record your question, then press stop. "
+                   "Allow microphone access if your browser asks.")
+        clip = st.audio_input("Question",
+                              key=f"mic_{st.session_state.voice_round}",
+                              label_visibility="collapsed")
+        row_a, row_b = st.columns([1, 5])
+        with row_a:
+            if st.button("Cancel", width="stretch"):
+                st.session_state.show_mic = False
+                st.session_state.voice_round += 1
+                st.rerun()
+        if clip is not None:
+            data = clip.getvalue()
+            if not data:
+                st.warning("The recording was empty. Check that your browser "
+                           "has microphone permission for this page.")
+            else:
+                with st.spinner(f"Transcribing {len(data)/1024:.0f} KB…"):
+                    res = voice.transcribe(data, "speech.wav")
+                if res.get("error"):
+                    st.error(res["error"])
+                else:
+                    st.session_state.pending_voice = res["text"]
+                    st.session_state.show_mic = False
+                    st.session_state.voice_round += 1
+                    st.rerun()
+
 if voice.available():
     box_col, mic_col = st.columns([12, 1], vertical_alignment="bottom")
     with box_col:
@@ -613,20 +644,10 @@ if voice.available():
             file_type=[e.lstrip(".") for e in core.SUPPORTED],
         )
     with mic_col:
-        with st.popover("🎤", width="stretch",
-                        help="Record a question and have it transcribed"):
-            st.caption("Record, then stop.")
-            clip = st.audio_input("Question",
-                                  key=f"mic_{st.session_state.voice_round}",
-                                  label_visibility="collapsed")
-            if clip is not None:
-                with st.spinner("Transcribing…"):
-                    res = voice.transcribe(clip.getvalue(), "speech.wav")
-                if res.get("error"):
-                    st.error(res["error"])
-                else:
-                    st.session_state.pending_voice = res["text"]
-                    st.rerun()
+        if st.button("🎤", width="stretch",
+                     help="Record a question and have it transcribed"):
+            st.session_state.show_mic = not st.session_state.get("show_mic")
+            st.rerun()
 else:
     entry = st.chat_input(
         "Ask me anything — attach a document with the paperclip",

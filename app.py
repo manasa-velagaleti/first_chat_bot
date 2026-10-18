@@ -579,14 +579,43 @@ for turn, (role, text, caption, sources) in enumerate(cur["history"]):
         if caption:
             st.caption(caption)
 
-# The microphone sits beside the chat box rather than in the sidebar: it is
-# an input, and inputs belong where you are typing.
+# A transcription waiting to be sent: shown in an editable box so it can be
+# corrected before it goes. st.chat_input cannot be filled programmatically,
+# so "put it in the prompt" means putting it somewhere editable next to it.
+pending = st.session_state.get("pending_voice")
+if pending:
+    st.caption("🎤 Heard — edit if needed, then send:")
+    edit_col, send_col, drop_col = st.columns([6, 1, 1])
+    with edit_col:
+        edited = st.text_input("Transcribed question", value=pending,
+                               label_visibility="collapsed",
+                               key=f"vt_{st.session_state.voice_round}")
+    with send_col:
+        if st.button("Send", width="stretch", type="primary"):
+            st.session_state.voice_prompt = edited
+            st.session_state.pop("pending_voice", None)
+            st.session_state.voice_round += 1
+            st.rerun()
+    with drop_col:
+        if st.button("Clear", width="stretch"):
+            st.session_state.pop("pending_voice", None)
+            st.session_state.voice_round += 1
+            st.rerun()
+
+# The microphone sits beside the chat box, not above it - it is another way
+# of filling the same box, so it belongs next to the send button.
 if voice.available():
-    mic_col, _ = st.columns([1, 2])
+    box_col, mic_col = st.columns([12, 1], vertical_alignment="bottom")
+    with box_col:
+        entry = st.chat_input(
+            "Ask me anything — attach a document with the paperclip",
+            accept_file=True,
+            file_type=[e.lstrip(".") for e in core.SUPPORTED],
+        )
     with mic_col:
-        with st.popover("🎤 Speak", width="stretch"):
-            st.caption("Record your question, then stop. It is transcribed "
-                       "and asked for you.")
+        with st.popover("🎤", width="stretch",
+                        help="Record a question and have it transcribed"):
+            st.caption("Record, then stop.")
             clip = st.audio_input("Question",
                                   key=f"mic_{st.session_state.voice_round}",
                                   label_visibility="collapsed")
@@ -596,16 +625,14 @@ if voice.available():
                 if res.get("error"):
                     st.error(res["error"])
                 else:
-                    # Hand it on exactly as a typed question would arrive.
-                    st.session_state.voice_prompt = res["text"]
-                    st.session_state.voice_round += 1
+                    st.session_state.pending_voice = res["text"]
                     st.rerun()
-
-entry = st.chat_input(
-    "Ask me anything — attach a document with the paperclip",
-    accept_file=True,
-    file_type=[e.lstrip(".") for e in core.SUPPORTED],
-)
+else:
+    entry = st.chat_input(
+        "Ask me anything — attach a document with the paperclip",
+        accept_file=True,
+        file_type=[e.lstrip(".") for e in core.SUPPORTED],
+    )
 
 # A transcribed recording enters here as though it had been typed, so voice
 # and keyboard take exactly the same path through the rest of the app.
